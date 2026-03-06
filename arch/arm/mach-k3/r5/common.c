@@ -56,9 +56,22 @@ static const char *image_os_match[IMAGE_AMT] = {
 
 static struct image_info fit_image_info[IMAGE_AMT];
 
+struct lpm_addr_info mem_addr_lpm;
+
 __weak int board_is_resuming(void)
 {
 	return 0;
+}
+
+
+__weak void lpm_process(void)
+{
+	return;
+}
+
+__weak int extract_lpm_region(void)
+{
+	return -EINVAL;
 }
 
 void init_env(void)
@@ -225,7 +238,171 @@ __weak int k3_mem_map_init(void)
 	return 0;
 }
 
-static void resume_rproc(void)
+void save_certificate(void) {
+
+	if(!fit_image_info[IMAGE_ID_ATF].image_start || !fit_image_info[IMAGE_ID_OPTEE].image_start || !fit_image_info[IMAGE_ID_DM_FW].image_start) {
+		pr_err("Invalid images to save\n");
+		return;
+	}
+
+	int ret = extract_lpm_region();
+	if(ret)
+		pr_err("Cannot find valid LPM address range..\n");
+	else {
+		memcpy(mem_addr_lpm.atf_cert_addr , (void *)fit_image_info[IMAGE_ID_ATF].image_start, fit_image_info[IMAGE_ID_ATF].image_len);
+		memcpy(mem_addr_lpm.optee_cert_addr, (void *)fit_image_info[IMAGE_ID_OPTEE].image_start, fit_image_info[IMAGE_ID_OPTEE].image_len);
+		memcpy(mem_addr_lpm.dm_save_addr, (void *)fit_image_info[IMAGE_ID_DM_FW].image_start, fit_image_info[IMAGE_ID_DM_FW].image_len);
+	}
+}
+
+void __noreturn jump_to_image_no_args(struct spl_image_info *spl_image)
+{
+	typedef void __noreturn (*image_entry_noargs_t)(void);
+	struct ti_sci_handle *ti_sci = get_ti_sci_handle();
+	u32 loadaddr = 0;
+	int ret, size = 0, shut_cpu = 0;
+
+	/* Release all the exclusive devices held by SPL before starting ATF */
+	ti_sci->ops.dev_ops.release_exclusive_devices();
+
+	ret = rproc_init();
+	if (ret)
+		panic("rproc failed to be initialized (%d)\n", ret);
+
+	init_env();
+
+	if (!fit_image_info[IMAGE_ID_DM_FW].image_start) {
+		size = load_firmware("name_mcur5f0_0fw", "addr_mcur5f0_0load",
+				     &loadaddr);
+	}
+
+#if IS_ENABLED(CONFIG_K3_HSM_FW)
+	ret = boot_hsm_core();
+	if (ret)
+		printf("HSM core failed to boot, %d\n", ret);
+	else
+		printf("Successfully booted HSM core\n");
+#endif
+	/*
+	 * It is assumed that remoteproc device 1 is the corresponding
+	 * Cortex-A core which runs ATF. Make sure DT reflects the same.
+	 */
+	if (!fit_image_info[IMAGE_ID_ATF].image_start)
+		fit_image_info[IMAGE_ID_ATF].image_start =
+			spl_image->entry_point;
+
+	ret = rproc_load(1, fit_image_info[IMAGE_ID_ATF].image_start, 0x200);
+	if (ret)
+		panic("%s: ATF failed to load on rproc (%d)\n", __func__, ret);
+
+	lpm_process();
+#if CONFIG_IS_ENABLED(FIT_IMAGE_POST_PROCESS)
+	/* Authenticate ATF */
+	void *image_addr = (void *)fit_image_info[IMAGE_ID_ATF].image_start;
+
+	debug("%s: Authenticating image: addr=%lx, size=%ld, os=%s\n", __func__,
+	      fit_image_info[IMAGE_ID_ATF].image_start,
+	      fit_image_info[IMAGE_ID_ATF].image_len,
+	      image_os_match[IMAGE_ID_ATF]);
+
+	ti_secure_image_post_process(&image_addr,
+				     (size_t *)&fit_image_info[IMAGE_ID_ATF].image_len);
+
+	/* Authenticate OPTEE */
+	image_addr = (void *)fit_image_info[IMAGE_ID_OPTEE].image_start;
+
+	debug("%s: Authenticating image: addr=%lx, size=%ld, os=%s\n", __func__,
+	      fit_image_info[IMAGE_ID_OPTEE].image_start,
+	      fit_image_info[IMAGE_ID_OPTEE].image_len,
+	      image_os_match[IMAGE_ID_OPTEE]);
+
+	ti_secure_image_post_process(&image_addr,
+				     (size_t *)&fit_image_info[IMAGE_ID_OPTEE].image_len);
+#endif
+
+	if (!fit_image_info[IMAGE_ID_DM_FW].image_len &&
+	    !(size > 0 && valid_elf_image(loadaddr))) {
+		shut_cpu = 1;
+		goto start_arm64;
+	}
+
+	if (!fit_image_info[IMAGE_ID_DM_FW].image_start) {
+		loadaddr = load_elf_image_phdr(loadaddr);
+	} else {
+		loadaddr = fit_image_info[IMAGE_ID_DM_FW].image_start;
+		if (valid_elf_image(loadaddr)) {
+#if IS_ENABLED(CONFIG_SOC_K3_J721E) || IS_ENABLED(CONFIG_SOC_K3_J784S4)
+			ret = ti_sci->ops.lpm_ops.lpm_save_addr(ti_sci, (u32)mem_addr_lpm.context_save_addr, mem_addr_lpm.size);
+			if (ret)
+				pr_err("TIFS lpm save addr fail\n");
+			loadaddr = fit_image_info[IMAGE_ID_DM_FW].image_start;
+#endif
+			loadaddr = load_elf_image_phdr(loadaddr);
+		}
+	}
+
+	debug("%s: jumping to address %x\n", __func__, loadaddr);
+
+start_arm64:
+	/* Add an extra newline to differentiate the ATF logs from SPL */
+	printf("Starting ATF on ARM64 core...\n\n");
+
+	ret = rproc_start(1);
+	if (ret)
+		panic("%s: ATF failed to start on rproc (%d)\n",
+		      __func__, ret);
+
+	if (shut_cpu) {
+		debug("Shutting down...\n");
+		release_resources_for_core_shutdown();
+
+		while (1)
+			asm volatile("wfe");
+	}
+	image_entry_noargs_t image_entry = (image_entry_noargs_t)loadaddr;
+
+	image_entry();
+}
+#endif
+
+u32 resume_to_dm_f(void)
+{
+	struct ti_sci_handle *ti_sci = get_ti_sci_handle();
+	u32 loadaddr = 0, save_addr = 0;
+	int ret = 0;
+
+	loadaddr = (u32)mem_addr_lpm.dm_save_addr;
+	if (!valid_elf_image(loadaddr))
+		panic("%s: DM-Firmware image is not valid, it cannot be loaded\n",
+		      __func__);
+	loadaddr = load_elf_image_phdr(loadaddr);
+	save_addr = (uintptr_t)mem_addr_lpm.context_save_addr;
+	ret = ti_sci->ops.lpm_ops.lpm_save_addr(ti_sci, save_addr, mem_addr_lpm.size);
+	if (ret)
+		panic("TIFS lpm save addr fail : %x\n", ret);
+	/*
+	 * TIFS minimal context restore
+	 * This restores also the firewall
+	*/
+	ret = ti_sci->ops.lpm_ops.restore_context(ti_sci, 0);
+	if (ret)
+		panic("TIFS min_context_restore failed (%d)\n", ret);
+	/*
+	 * Restore TFA in msmc memory
+	 */
+	ret = ti_sci->ops.lpm_ops.decrypt_tfa(ti_sci,
+					      CONFIG_K3_ATF_LOAD_ADDR);
+	if (ret)
+		panic("%s: TIFS failed to decrytp TFA : %x\n", __func__, ret);
+		/* restore TFA resume vectore address in main core */
+	ret = ti_sci->ops.lpm_ops.core_resume(ti_sci);
+	if (ret)
+		panic("ATF failed to resume (%d)\n", ret);
+
+	return loadaddr;
+}
+
+void resume_rproc_f(void)
 {
 	struct power_domain rproc_pwrdmn;
 	unsigned long gtc_rate;
@@ -263,164 +440,6 @@ static void resume_rproc(void)
 	if (ret)
 		panic("power_domain_on failed: %d\n", ret);
 }
-
-void __noreturn jump_to_image_no_args(struct spl_image_info *spl_image)
-{
-	typedef void __noreturn (*image_entry_noargs_t)(void);
-	struct ti_sci_handle *ti_sci = get_ti_sci_handle();
-	u32 loadaddr = 0;
-	int ret, size = 0, shut_cpu = 0;
-
-	/* Release all the exclusive devices held by SPL before starting ATF */
-	ti_sci->ops.dev_ops.release_exclusive_devices();
-
-	if (board_is_resuming()) {
-		loadaddr = fit_image_info[IMAGE_ID_DM_FW].image_start;
-		if (!valid_elf_image(loadaddr))
-			panic("%s: DM-Firmware image is not valid, it cannot be loaded\n",
-			      __func__);
-		loadaddr = extract_shdr(".ctx_buffer", loadaddr, &size);
-		if (!loadaddr)
-			panic("Extract addr failed, %x\n", loadaddr);
-
-		ret = ti_sci->ops.lpm_ops.lpm_save_addr(ti_sci, loadaddr, size);
-		if (ret)
-			panic("TIFS lpm save addr fail : %x\n", ret);
-
-		loadaddr = fit_image_info[IMAGE_ID_DM_FW].image_start;
-		loadaddr = load_elf_image_phdr(loadaddr);
-
-		/*
-		 * TIFS minimal context restore
-		 * This restores also the firewall
-		 */
-		ret = ti_sci->ops.lpm_ops.restore_context(ti_sci, 0);
-		if (ret)
-			panic("TIFS min_context_restore failed (%d)\n", ret);
-
-		/*
-		 * Restore TFA in msmc memory
-		 */
-		ret = ti_sci->ops.lpm_ops.decrypt_tfa(ti_sci,
-						      CONFIG_K3_ATF_LOAD_ADDR);
-		if (ret)
-			panic("%s: TIFS failed to decrytp TFA : %x\n", __func__, ret);
-
-		/* restore TFA resume vectore address in main core */
-		ret = ti_sci->ops.lpm_ops.core_resume(ti_sci);
-		if (ret)
-			panic("ATF failed to resume (%d)\n", ret);
-
-		goto start_arm64;
-	}
-
-	ret = rproc_init();
-	if (ret)
-		panic("rproc failed to be initialized (%d)\n", ret);
-
-	init_env();
-
-	if (!fit_image_info[IMAGE_ID_DM_FW].image_start) {
-		size = load_firmware("name_mcur5f0_0fw", "addr_mcur5f0_0load",
-				     &loadaddr);
-	}
-
-#if IS_ENABLED(CONFIG_K3_HSM_FW)
-	ret = boot_hsm_core();
-	if (ret)
-		printf("HSM core failed to boot, %d\n", ret);
-	else
-		printf("Successfully booted HSM core\n");
-#endif
-	/*
-	 * It is assumed that remoteproc device 1 is the corresponding
-	 * Cortex-A core which runs ATF. Make sure DT reflects the same.
-	 */
-	if (!fit_image_info[IMAGE_ID_ATF].image_start)
-		fit_image_info[IMAGE_ID_ATF].image_start =
-			spl_image->entry_point;
-
-	ret = rproc_load(1, fit_image_info[IMAGE_ID_ATF].image_start, 0x200);
-	if (ret)
-		panic("%s: ATF failed to load on rproc (%d)\n", __func__, ret);
-
-#if CONFIG_IS_ENABLED(FIT_IMAGE_POST_PROCESS)
-	/* Authenticate ATF */
-	void *image_addr = (void *)fit_image_info[IMAGE_ID_ATF].image_start;
-
-	debug("%s: Authenticating image: addr=%lx, size=%ld, os=%s\n", __func__,
-	      fit_image_info[IMAGE_ID_ATF].image_start,
-	      fit_image_info[IMAGE_ID_ATF].image_len,
-	      image_os_match[IMAGE_ID_ATF]);
-
-	ti_secure_image_post_process(&image_addr,
-				     (size_t *)&fit_image_info[IMAGE_ID_ATF].image_len);
-
-	/* Authenticate OPTEE */
-	image_addr = (void *)fit_image_info[IMAGE_ID_OPTEE].image_start;
-
-	debug("%s: Authenticating image: addr=%lx, size=%ld, os=%s\n", __func__,
-	      fit_image_info[IMAGE_ID_OPTEE].image_start,
-	      fit_image_info[IMAGE_ID_OPTEE].image_len,
-	      image_os_match[IMAGE_ID_OPTEE]);
-
-	ti_secure_image_post_process(&image_addr,
-				     (size_t *)&fit_image_info[IMAGE_ID_OPTEE].image_len);
-#endif
-
-	if (!fit_image_info[IMAGE_ID_DM_FW].image_len &&
-	    !(size > 0 && valid_elf_image(loadaddr))) {
-		shut_cpu = 1;
-		goto start_arm64;
-	}
-
-	if (!fit_image_info[IMAGE_ID_DM_FW].image_start) {
-		loadaddr = load_elf_image_phdr(loadaddr);
-	} else {
-		loadaddr = fit_image_info[IMAGE_ID_DM_FW].image_start;
-		if (valid_elf_image(loadaddr)) {
-#if IS_ENABLED(CONFIG_SOC_K3_J721E) || IS_ENABLED(CONFIG_SOC_K3_J784S4)
-			loadaddr = extract_shdr(".ctx_buffer", loadaddr, &size);
-			if (!loadaddr) {
-				pr_warn("Extract addr failed : %x\n", loadaddr);
-			} else {
-				ret = ti_sci->ops.lpm_ops.lpm_save_addr(ti_sci, loadaddr, size);
-				if (ret)
-					pr_err("TIFS lpm save addr fail\n");
-			}
-			loadaddr = fit_image_info[IMAGE_ID_DM_FW].image_start;
-#endif
-			loadaddr = load_elf_image_phdr(loadaddr);
-		}
-	}
-
-	debug("%s: jumping to address %x\n", __func__, loadaddr);
-
-start_arm64:
-	/* Add an extra newline to differentiate the ATF logs from SPL */
-	printf("Starting ATF on ARM64 core...\n\n");
-
-	if (!board_is_resuming()) {
-		ret = rproc_start(1);
-		if (ret)
-			panic("%s: ATF failed to start on rproc (%d)\n",
-			      __func__, ret);
-	} else {
-		resume_rproc();
-	}
-
-	if (shut_cpu) {
-		debug("Shutting down...\n");
-		release_resources_for_core_shutdown();
-
-		while (1)
-			asm volatile("wfe");
-	}
-	image_entry_noargs_t image_entry = (image_entry_noargs_t)loadaddr;
-
-	image_entry();
-}
-#endif
 
 void disable_linefill_optimization(void)
 {
