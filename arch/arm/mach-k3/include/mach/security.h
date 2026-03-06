@@ -9,3 +9,5 @@
 #include <linux/types.h>
 
 void ti_secure_image_post_process(void **p_image, size_t *p_size);
+
+void ti_secure_image_replay_cert(void **p_image, size_t *p_size);
