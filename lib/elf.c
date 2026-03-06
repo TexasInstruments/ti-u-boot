@@ -10,7 +10,6 @@
 #include <errno.h>
 #include <net.h>
 #include <vxworks.h>
-#include <string.h>
 #ifdef CONFIG_X86
 #include <vesa.h>
 #include <asm/e820.h>
@@ -225,39 +224,6 @@ unsigned long load_elf_image_phdr(unsigned long addr)
 	}
 
 	return ehdr->e_entry;
-}
-
-/*
- * Extract the section header given a section name
- */
-unsigned int extract_shdr(const char *section_name, unsigned long addr, unsigned int *size)
-{
-	Elf32_Ehdr *ehdr; /* Elf header structure pointer */
-	Elf32_Shdr *shdr; /* Section header structure pointer */
-	unsigned char *strtab = 0; /* String table pointer */
-	int i;
-
-	ehdr = (Elf32_Ehdr *)addr;
-
-	/* get the shstrtab section header */
-	shdr = (Elf32_Shdr *)(addr + ehdr->e_shoff +
-			     (ehdr->e_shstrndx * sizeof(Elf32_Shdr)));
-
-	if (shdr->sh_type == SHT_STRTAB)
-		strtab = (unsigned char *)(addr + shdr->sh_offset);
-
-	if (strtab) {
-		for (i = 1; i < ehdr->e_shnum; ++i) {
-			shdr = (Elf32_Shdr *)(addr + ehdr->e_shoff +
-						(i * sizeof(Elf32_Shdr)));
-			if (strcasecmp(&strtab[shdr->sh_name], section_name) == 0) {
-				*size = shdr->sh_size;
-				return shdr->sh_addr;
-			}
-		}
-	}
-
-	return 0;
 }
 
 unsigned long load_elf_image_shdr(unsigned long addr)

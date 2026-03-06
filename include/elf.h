@@ -715,7 +715,6 @@ unsigned long load_elf64_image_phdr(unsigned long addr);
 unsigned long load_elf64_image_shdr(unsigned long addr);
 unsigned long load_elf_image_phdr(unsigned long addr);
 unsigned long load_elf_image_shdr(unsigned long addr);
-unsigned int extract_shdr(const char *section_name, unsigned long addr, unsigned int *size);
 #endif
 
 #endif /* _ELF_H */
