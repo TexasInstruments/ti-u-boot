@@ -97,11 +97,6 @@ int board_fit_config_name_match(const char *name)
 {
 	bool eeprom_read = board_ti_was_eeprom_read();
 
-#if IS_ENABLED(CONFIG_TARGET_J7200_R5_EVM)
-	if (board_is_resuming())
-		if (!strcmp(name, "k3-lpm"))
-			return 0;
-#endif
 	if (!eeprom_read || board_is_j721e_som()) {
 		if (!strcmp(name, "k3-j721e-common-proc-board") ||
 		    !strcmp(name, "k3-j721e-r5-common-proc-board"))
