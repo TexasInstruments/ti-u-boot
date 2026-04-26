@@ -261,7 +261,7 @@ int extract_lpm_region(void)
     ofnode node;
 	u32 lpm_reg_addr, lpm_reg_size;
 
-	node = ofnode_path("/reserved-memory/lpm-memories");
+	node = ofnode_path("/reserved-memory/lpm-memory");
 	if (!ofnode_valid(node)) {
 	        printf("lpm will not be functional\n");
 			return -ENODEV;
