@@ -85,7 +85,6 @@
 
 		lpm_memory_region: lpm-memory@a4800000 {
 			reg = <0x00 0xa4800000 0x00 0x00300000>;
-			alignment = <0x1000>;
 			no-map;
 			bootph-all;
 		};
