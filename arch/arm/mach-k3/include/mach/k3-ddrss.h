@@ -21,8 +21,6 @@ struct k3_ddrss_regs {
 	u32 wdqlvl_f2;
 };
 
-int board_is_resuming(void);
-
 /* LPDDR4 power management functions */
 void k3_ddrss_lpddr4_exit_retention(struct udevice *dev, struct k3_ddrss_regs *regs);
 void k3_ddrss_lpddr4_change_freq(struct udevice *dev);

@@ -58,12 +58,6 @@ static struct image_info fit_image_info[IMAGE_AMT];
 
 struct lpm_addr_info mem_addr_lpm;
 
-__weak int board_is_resuming(void)
-{
-	return 0;
-}
-
-
 __weak void lpm_process(void)
 {
 	return;
@@ -405,9 +399,7 @@ u32 resume_to_dm_f(void)
 void resume_rproc_f(void)
 {
 	struct power_domain rproc_pwrdmn;
-	unsigned long gtc_rate;
 	struct udevice *dev;
-	struct clk gtc_clk;
 	void *gtc_base;
 	int ret;
 
@@ -419,21 +411,14 @@ void resume_rproc_f(void)
 	if (ret)
 		panic("power_domain_get_rproc() failed: %d\n", ret);
 
-	ret = clk_get_by_index(dev, 0, &gtc_clk);
-	if (ret)
-		panic("clk_get failed: %d\n", ret);
-
 	gtc_base = dev_read_addr_ptr(dev);
 	if (!gtc_base)
 		panic("Get GTC address failed\n");
 
-	gtc_rate = clk_get_rate(&gtc_clk);
-
 #define GTC_CNTCR_REG	0x0
-#define GTC_CNTFID0_REG	0x20
 #define GTC_CNTR_EN	0x3
-	/* TFA expect the Global Timebase Counter to be set-up */
-	writel((u32)gtc_rate, gtc_base + GTC_CNTFID0_REG);
+
+	/* GTC counter values have been restored by TIFS, so enable the counter */
 	writel(GTC_CNTR_EN, gtc_base + GTC_CNTCR_REG);
 
 	ret = power_domain_on(&rproc_pwrdmn);

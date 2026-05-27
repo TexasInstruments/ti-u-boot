@@ -421,6 +421,11 @@ void board_prep_linux(struct bootm_headers *images)
 }
 #endif
 
+__weak int board_is_resuming(void)
+{
+	return 0;
+}
+
 __weak char k3_get_speed_grade(void)
 {
 	return K3_SPEED_GRADE_UNKNOWN;

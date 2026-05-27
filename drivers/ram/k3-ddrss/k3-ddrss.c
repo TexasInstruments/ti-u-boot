@@ -16,6 +16,7 @@
 #include <hang.h>
 #include <log.h>
 #include <asm/io.h>
+#include <mach/hardware.h>
 #include <power-domain.h>
 #include <regmap.h>
 #include <syscon.h>
@@ -520,10 +521,6 @@ static int k3_ddrss_ofdata_to_priv(struct udevice *dev)
 
 #if defined(CONFIG_K3_J721E_DDRSS)
 
-int __weak board_is_resuming(void)
-{
-	return 0;
-}
 void k3_ddrss_lpddr4_exit_retention(struct udevice *dev,
 				    struct k3_ddrss_regs *regs)
 {
