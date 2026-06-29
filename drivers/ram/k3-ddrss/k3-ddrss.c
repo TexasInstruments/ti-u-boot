@@ -1360,11 +1360,11 @@ static void k3_ddrss_run_retention_latch_clear_sequence(struct k3_ddrss_desc *dd
 
 static int k3_ddrss_probe(struct udevice *dev)
 {
-	u64 end, bank0, bank1;
+	u64 bank0, bank1;
 	int ret;
 	struct k3_ddrss_desc *ddrss = dev_get_priv(dev);
 	__maybe_unused u32 inst;
-	__maybe_unused u64 ddr_ram_size, ecc_res, start;
+	__maybe_unused u64 ddr_ram_size, ecc_res, start, end;
 	__maybe_unused struct k3_ddrss_data *ddrss_data = (struct k3_ddrss_data *)dev_get_driver_data(dev);
 	__maybe_unused struct k3_ddrss_ecc_region *range = &ddrss->ecc_range;
 	__maybe_unused struct k3_msmc *msmc_parent = NULL;
@@ -1445,13 +1445,12 @@ static int k3_ddrss_probe(struct udevice *dev)
 		}
 
 #if !CONFIG_IS_ENABLED(K3_MULTI_DDR)
-		end = ddrss->ecc_range.start + ddrss->ecc_range.range;
 		start = ddrss->ecc_range.start;
 		inst = ddrss->instance;
 		ddr_ram_size = ddrss->ddr_ram_size;
 		ecc_res = ddrss->ecc_reserved_space;
 
-		if (end > (ddr_ram_size - ecc_res))
+		if (ddrss->ecc_range.range > (ddr_ram_size - ecc_res))
 			ddrss->ecc_regions[0].range = ddr_ram_size - ecc_res;
 		else
 			ddrss->ecc_regions[0].range = ddrss->ecc_range.range;
