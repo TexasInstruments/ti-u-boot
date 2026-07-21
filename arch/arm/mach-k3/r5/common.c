@@ -449,6 +449,30 @@ void disable_linefill_optimization(void)
 	asm("mcr p15, 0, %0, c1, c0, 1" : : "r" (actlr));
 }
 
+int configure_fwl_region(const struct fwl_config *fwl)
+{
+	struct ti_sci_handle *sci = get_ti_sci_handle();
+	struct ti_sci_fwl_ops *ops = &sci->ops.fwl_ops;
+	struct ti_sci_msg_fwl_region region = {
+		.fwl_id = fwl->data.fwl_id,
+		.region = fwl->data.region,
+		.n_permission_regs = fwl->n_permission_regs,
+		.control = fwl->control,
+		.permissions = { fwl->permissions[0],
+				 fwl->permissions[1],
+				 fwl->permissions[2] },
+		.start_address = fwl->start_address,
+		.end_address = fwl->end_address,
+	};
+	int ret;
+
+	/* Directly set the provided region configuration */
+	ret = ops->set_fwl_region(sci, &region);
+	if (ret)
+		pr_err("Could not configure firewall region\n");
+	return ret;
+}
+
 int remove_fwl_region(struct fwl_data *fwl)
 {
 	struct ti_sci_handle *sci = get_ti_sci_handle();

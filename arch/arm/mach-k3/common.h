@@ -23,6 +23,15 @@ struct fwl_data {
 	u16 region;
 };
 
+struct fwl_config {
+	struct fwl_data data;
+	u32 n_permission_regs;
+	u32 control;
+	u32 permissions[3];
+	u64 start_address;
+	u64 end_address;
+};
+
 struct k3_speed_grade_map {
 	char speed_grade;
 	u32 a_core_frequency;
@@ -57,6 +66,7 @@ void setup_k3_mpu_regions(void);
 int early_console_init(void);
 void disable_linefill_optimization(void);
 int remove_fwl_region(struct fwl_data *fwl);
+int configure_fwl_region(const struct fwl_config *fwl);
 void remove_fwl_configs(struct fwl_data *fwl_data, size_t fwl_data_size);
 int load_firmware(char *name_fw, char *name_loadaddr, u32 *loadaddr);
 void k3_sysfw_print_ver(void);
