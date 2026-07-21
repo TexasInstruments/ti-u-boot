@@ -457,7 +457,7 @@ int remove_fwl_region(struct fwl_data *fwl)
 	int ret;
 
 	region.fwl_id = fwl->fwl_id;
-	region.region = fwl->regions;
+	region.region = fwl->region;
 	region.n_permission_regs = 3;
 
 	ops->get_fwl_region(sci, &region);
@@ -485,7 +485,7 @@ static void remove_fwl_regions(struct fwl_data fwl_data, size_t num_regions,
 	ti_sci = get_ti_sci_handle();
 	fwl_ops = &ti_sci->ops.fwl_ops;
 
-	for (j = 0; j < fwl_data.regions; j++) {
+	for (j = 0; j < fwl_data.region; j++) {
 		region.fwl_id = fwl_data.fwl_id;
 		region.region = j;
 		region.n_permission_regs = 3;
@@ -511,9 +511,9 @@ void remove_fwl_configs(struct fwl_data *fwl_data, size_t fwl_data_size)
 	size_t i;
 
 	for (i = 0; i < fwl_data_size; i++) {
-		remove_fwl_regions(fwl_data[i], fwl_data[i].regions,
+		remove_fwl_regions(fwl_data[i], fwl_data[i].region,
 				   K3_FIREWALL_REGION_FOREGROUND);
-		remove_fwl_regions(fwl_data[i], fwl_data[i].regions,
+		remove_fwl_regions(fwl_data[i], fwl_data[i].region,
 				   K3_FIREWALL_REGION_BACKGROUND);
 	}
 }

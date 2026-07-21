@@ -20,7 +20,7 @@
 struct fwl_data {
 	const char *name;
 	u16 fwl_id;
-	u16 regions;
+	u16 region;
 };
 
 struct k3_speed_grade_map {
