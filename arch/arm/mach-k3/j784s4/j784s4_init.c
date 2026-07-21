@@ -12,6 +12,7 @@
 #include <asm/armv7_mpu.h>
 #include <asm/arch/hardware.h>
 #include <linux/soc/ti/ti_sci_protocol.h>
+#include <soc/ti/k3-security.h>
 #include <dm.h>
 #include <dm/uclass-internal.h>
 #include <dm/pinctrl.h>
@@ -138,6 +139,48 @@ static void setup_navss_nb(void)
 	writel(NB_THREADMAP_BIT2, (uintptr_t)NAVSS0_NBSS_NB1_CFG_NB_THREADMAP);
 }
 
+static void open_mpu_clec_firewalls(void)
+{
+	int ret = 0;
+	/*
+	 * The firewall regions are being configured for backward compatibility,
+	 * Future firmware revisions would configure the background firewalls
+	 * properly hence allow everyone from a foreground as well but keep it
+	 * unlocked for reconfigurability.
+	 */
+	u32 allow_all_perm = ((FWPRIVID_ALL << FWPRIVID_SHIFT) |
+			      FWPERM_NON_SECURE_PRIV_RWCD |
+			      FWPERM_NON_SECURE_USER_RWCD |
+			      FWPERM_SECURE_PRIV_RWCD |
+			      FWPERM_SECURE_USER_RWCD);
+
+	struct fwl_config clec_region = {
+		.data.name = "CLEC",
+		.data.region = 3,
+		.n_permission_regs = 3,
+		.control = FWCTRL_EN | FWCTRL_CACHE,
+		.permissions = {allow_all_perm, allow_all_perm, allow_all_perm},
+		.start_address = (0x78000000),
+		.end_address   = (0x7f000000)
+	};
+
+	/* Program the first port for CLEC region */
+	clec_region.data.fwl_id = 5140;
+
+	ret = configure_fwl_region(&clec_region);
+	if (ret)
+		printf("Failed to enable firewall region %u: %d\n",
+		       clec_region.data.fwl_id, ret);
+
+	/* Program the second port for CLEC region */
+	clec_region.data.fwl_id = 5141;
+
+	ret = configure_fwl_region(&clec_region);
+	if (ret)
+		printf("Failed to enable firewall region %u: %d\n",
+		       clec_region.data.fwl_id, ret);
+}
+
 /* Execute and check results of BIST executed on MCU1_x and MCU4_O */
 static void run_bist_j784s4(struct udevice *dev)
 {
@@ -260,6 +303,8 @@ void k3_spl_init(void)
 		remove_fwl_configs(mcu_cbass0_fwls, ARRAY_SIZE(mcu_cbass0_fwls));
 		remove_fwl_configs(wkup_cbass0_fwls, ARRAY_SIZE(wkup_cbass0_fwls));
 		remove_fwl_configs(navss_cbass0_fwls, ARRAY_SIZE(navss_cbass0_fwls));
+
+		open_mpu_clec_firewalls();
 	}
 
 	writel(AUDIO_REFCLK1_DEFAULT, (uintptr_t)CTRL_MMR_CFG0_AUDIO_REFCLK1_CTRL);
