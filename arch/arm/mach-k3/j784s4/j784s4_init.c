@@ -61,6 +61,39 @@
 #define RAT_ERRATA2437_OUT_ADDR_L		0x21000000
 #define RAT_ERRATA2437_CTRL			0x80000010
 
+/*
+ * CLEC - Compute Cluster Event Controller
+ *
+ * ARM corepac input slots route incoming eventi signals from each ARM cluster
+ * to the output event bus, enabling cross-cluster SEV/WFE signaling.
+ */
+#define CLEC_BASE				0x78000000
+#define CLEC_MRR_OFFSET				0x1000
+#define CLEC_MRR_STRIDE				0x10000
+#define CLEC_MRR_REG(slot)			((CLEC_BASE) + (CLEC_MRR_OFFSET) + \
+						 (slot) * (CLEC_MRR_STRIDE))
+
+/* ARM corepac MRR input slot indices (0-based) */
+#define CLEC_ARM_COREPAC0_SLOT			512
+#define CLEC_ARM_COREPAC1_SLOT			513
+
+/* ARM corepac output event numbers for cross-cluster routing */
+#define CLEC_ARM_COREPAC0_EVT			192
+#define CLEC_ARM_COREPAC1_EVT			193
+
+/* MRR register bit fields */
+#define CLEC_MRR_ESE_ENABLE			BIT(30) /* Event Steer Enable */
+#define CLEC_MRR_IS_LVL				BIT(24) /* Level-sensitive input */
+#define CLEC_MRR_RTMAP_SHIFT			16      /* Routing map field */
+#define CLEC_MRR_RTMAP_SYSTEM			2       /* Route to ARM corepac */
+#define CLEC_MRR_EXT_EVTNUM_SHIFT		8       /* External event number */
+
+/* Build an MRR value that steers input events to the given ARM output event */
+#define CLEC_MRR_VAL(evt)			(CLEC_MRR_ESE_ENABLE | CLEC_MRR_IS_LVL | \
+						 ((CLEC_MRR_RTMAP_SYSTEM) << \
+						  CLEC_MRR_RTMAP_SHIFT) | \
+						 ((evt) << CLEC_MRR_EXT_EVTNUM_SHIFT))
+
 struct fwl_data infra_cbass0_fwls[] = {
 	{ "PSC0", 5, 1 },
 	{ "PLL_CTRL0", 6, 1 },
@@ -179,6 +212,16 @@ static void open_mpu_clec_firewalls(void)
 	if (ret)
 		printf("Failed to enable firewall region %u: %d\n",
 		       clec_region.data.fwl_id, ret);
+}
+
+static void program_mpu_clec_events(void)
+{
+	/* Route CLUSTER0 eventi -> CLUSTER1 eventi */
+	writel(CLEC_MRR_VAL(CLEC_ARM_COREPAC1_EVT),
+	       CLEC_MRR_REG(CLEC_ARM_COREPAC0_SLOT));
+	/* Route CLUSTER1 eventi -> CLUSTER0 eventi */
+	writel(CLEC_MRR_VAL(CLEC_ARM_COREPAC0_EVT),
+	       CLEC_MRR_REG(CLEC_ARM_COREPAC1_SLOT));
 }
 
 /* Execute and check results of BIST executed on MCU1_x and MCU4_O */
@@ -305,6 +348,7 @@ void k3_spl_init(void)
 		remove_fwl_configs(navss_cbass0_fwls, ARRAY_SIZE(navss_cbass0_fwls));
 
 		open_mpu_clec_firewalls();
+		program_mpu_clec_events();
 	}
 
 	writel(AUDIO_REFCLK1_DEFAULT, (uintptr_t)CTRL_MMR_CFG0_AUDIO_REFCLK1_CTRL);
