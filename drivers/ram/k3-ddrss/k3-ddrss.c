@@ -1363,7 +1363,8 @@ static int k3_ddrss_probe(struct udevice *dev)
 	u64 end, bank0, bank1;
 	int ret;
 	struct k3_ddrss_desc *ddrss = dev_get_priv(dev);
-	__maybe_unused u32 inst, ddr_ram_size, ecc_res, start;
+	__maybe_unused u32 inst;
+	__maybe_unused u64 ddr_ram_size, ecc_res, start;
 	__maybe_unused struct k3_ddrss_data *ddrss_data = (struct k3_ddrss_data *)dev_get_driver_data(dev);
 	__maybe_unused struct k3_ddrss_ecc_region *range = &ddrss->ecc_range;
 	__maybe_unused struct k3_msmc *msmc_parent = NULL;
