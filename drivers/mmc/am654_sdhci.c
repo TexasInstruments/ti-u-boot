@@ -86,6 +86,9 @@
 
 #define ENABLE	0x1
 
+/* HS200 mode OTAP delay used by the J721E SR2.0 silicon revision */
+#define J721E_SR2_HS200_OTAP_DEL	0x8
+
 struct am654_sdhci_plat {
 	struct mmc_config cfg;
 	struct mmc mmc;
@@ -704,6 +707,11 @@ static struct soc_attr sdhci_am654_descope_hs400[] = {
 	{ /* sentinel */ }
 };
 
+static const struct soc_attr am654_sdhci_alt_otap_attr[] = {
+	{ .family = "J721E", .revision = "SR2.0" },
+	{ /* sentinel */ }
+};
+
 static int sdhci_am654_get_otap_delay(struct udevice *dev,
 				      struct mmc_config *cfg)
 {
@@ -782,6 +790,17 @@ static int am654_sdhci_probe(struct udevice *dev)
 	ret = sdhci_am654_get_otap_delay(dev, cfg);
 	if (ret)
 		return ret;
+
+	/*
+	 * eMMC HS200 mode on the J721E SR2.0 silicon revision needs a different
+	 * OTAP delay than earlier revisions.
+	 */
+	if (drv_data == &j721e_8bit_drv_data &&
+	    soc_device_match(am654_sdhci_alt_otap_attr)) {
+		dev_dbg(dev, "Overriding eMMC HS200 OTAP delay to 0x%x for SR2.0\n",
+			J721E_SR2_HS200_OTAP_DEL);
+		plat->otap_del_sel[MMC_HS_200] = J721E_SR2_HS200_OTAP_DEL;
+	}
 
 	/* Update ops based on SoC revision */
 	soc = soc_device_match(am654_sdhci_soc_attr);
