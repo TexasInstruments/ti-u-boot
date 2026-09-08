@@ -2895,6 +2895,8 @@ static int mmc_power_on(struct mmc *mmc)
 
 static int mmc_power_off(struct mmc *mmc)
 {
+	u32 delay_us = 0;
+
 	mmc_set_clock(mmc, 0, MMC_CLK_DISABLE);
 #if CONFIG_IS_ENABLED(DM_MMC) && CONFIG_IS_ENABLED(DM_REGULATOR)
 	if (mmc->vmmc_supply) {
@@ -2916,6 +2918,12 @@ static int mmc_power_off(struct mmc *mmc)
 			return ret;
 		}
 	}
+
+	if (mmc->dev)
+		dev_read_u32(mmc->dev, "power-off-delay-us", &delay_us);
+
+	if (delay_us)
+		udelay(delay_us);
 #endif
 	return 0;
 }
