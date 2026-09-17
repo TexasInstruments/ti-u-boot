@@ -132,6 +132,12 @@ int wkup_r5f_am62_lpm_meta_data_addr(u64 *meta_data_addr)
 	return 0;
 }
 
+/*
+ * Restore TIFS context for LPM resume.
+ * @ctx_addr: DDR address pointing to the location containing the actual
+ *            TIFS context address. TIFS will read from this DDR location
+ *            to get the context address, so DDR must be accessible.
+ */
 static int lpm_restore_context(u64 ctx_addr)
 {
 	struct ti_sci_handle *ti_sci = get_ti_sci_handle();
@@ -152,16 +158,26 @@ struct lpm_meta_data {
 
 void __noreturn lpm_resume_from_ddr(u64 meta_data_addr)
 {
-	struct lpm_meta_data lpm_data = *(struct lpm_meta_data *)(uintptr_t)meta_data_addr;
+	struct lpm_meta_data lpm_data;
 	typedef void __noreturn (*image_entry_noargs_t)(void);
 	image_entry_noargs_t image_entry;
 	int ret;
 
-	ret = lpm_restore_context(lpm_data.tifs_context_save_address);
+	/*
+	 * DDR not accessible yet - cannot dereference meta_data_addr.
+	 * Pass DDR pointer to TIFS for context restore using pointer arithmetic.
+	 */
+	u64 tifs_ctx_addr_ptr = meta_data_addr +
+				offsetof(struct lpm_meta_data, tifs_context_save_address);
+
+	ret = lpm_restore_context(tifs_ctx_addr_ptr);
 	if (ret)
-		panic("Failed to restore context from 0x%x%08x\n",
-		      (u32)(lpm_data.tifs_context_save_address >> 32),
-		      (u32)lpm_data.tifs_context_save_address);
+		panic("Failed to restore context via DDR pointer 0x%x%08x\n",
+		      (u32)(tifs_ctx_addr_ptr >> 32),
+		      (u32)tifs_ctx_addr_ptr);
+
+	/* Now it's safe to read from DDR after context restore */
+	lpm_data = *(struct lpm_meta_data *)(uintptr_t)meta_data_addr;
 
 	image_entry = (image_entry_noargs_t)(uintptr_t)lpm_data.dm_jump_address;
 	printf("Resuming from DDR, jumping to stored DM loadaddr 0x%x%08x, TIFS context restored from 0x%x%08x\n",
