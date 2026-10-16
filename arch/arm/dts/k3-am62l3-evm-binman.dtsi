@@ -13,7 +13,7 @@
 	custMpk {
 		filename = "custMpk.pem";
 
-		custmpk_pem: blob-ext {
+		signing-key-path {
 			filename = "arch/arm/mach-k3/keys/custMpk.pem";
 		};
 	};
