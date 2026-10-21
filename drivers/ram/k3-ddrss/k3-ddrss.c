@@ -16,6 +16,7 @@
 #include <hang.h>
 #include <log.h>
 #include <asm/io.h>
+#include <linux/sizes.h>
 #include <power-domain.h>
 #include <wait_bit.h>
 #include <power/regulator.h>
@@ -1175,9 +1176,12 @@ static int k3_ddrss_probe(struct udevice *dev)
 
 		/*
 		 * ECC takes 1/9th of the total DDR irrespective of the size of
-		 * the region under protection. Round it up to 1/8th.
+		 * the region under protection. Round up to a 2MB boundary so
+		 * the DRAM/ECC split stays MMU block-aligned.
 		 */
-		ddrss->ecc_reserved_space = ddrss->ddr_ram_size >> 3;
+		ddrss->ecc_reserved_space = ddrss->ddr_ram_size + 8;
+		do_div(ddrss->ecc_reserved_space, 9);
+		ddrss->ecc_reserved_space = round_up(ddrss->ecc_reserved_space, SZ_2M);
 
 		k3_ddrss_ddr_inline_ecc_base_size_calc(range);
 
