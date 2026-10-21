@@ -454,14 +454,6 @@ static int regulator_post_bind(struct udevice *dev)
 		return -EINVAL;
 	}
 
-	/*
-	 * In case the regulator has regulator-always-on or
-	 * regulator-boot-on DT property, trigger probe() to
-	 * configure its default state during startup.
-	 */
-	if (uc_pdata->always_on || uc_pdata->boot_on)
-		dev_or_flags(dev, DM_FLAG_PROBE_AFTER_BIND);
-
 	return 0;
 }
 
