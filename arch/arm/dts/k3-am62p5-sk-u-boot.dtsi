@@ -14,10 +14,6 @@
 
 };
 
-&wkup_r5fss0_core0_memory_region {
-	bootph-pre-ram;
-};
-
 &dmsc {
 	bootph-pre-ram;
 };
