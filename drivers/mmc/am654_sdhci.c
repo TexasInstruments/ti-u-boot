@@ -15,6 +15,7 @@
 #include <soc.h>
 #include <dm/device_compat.h>
 #include <linux/bitops.h>
+#include <linux/delay.h>
 #include <linux/err.h>
 
 /* CTL_CFG Registers */
@@ -111,6 +112,7 @@ struct am654_sdhci_plat {
 	u32 quirks;
 #define SDHCI_AM654_QUIRK_FORCE_CDTEST BIT(0)
 #define SDHCI_AM654_QUIRK_DDR52_LIMIT_40MHZ BIT(1)
+#define SDHCI_AM654_QUIRK_HS400_RX_FIFO_CORRUPT BIT(2)
 	u32 actual_mmc_clock;
 };
 
@@ -311,6 +313,7 @@ static int am654_sdhci_set_ios_post(struct sdhci_host *host)
 	int mode = host->mmc->selected_mode;
 	u32 otap_del_sel;
 	u32 mask, val;
+	u16 ctrl2;
 	int ret;
 
 	/* Reset SD Clock Enable */
@@ -355,6 +358,20 @@ static int am654_sdhci_set_ios_post(struct sdhci_host *host)
 
 		am654_sdhci_write_itapdly(plat, plat->itap_del_sel[mode],
 					  plat->itap_del_ena[mode]);
+
+		if (plat->quirks & SDHCI_AM654_QUIRK_HS400_RX_FIFO_CORRUPT &&
+		    mode == MMC_HS_400) {
+			ctrl2 = sdhci_readw(host, SDHCI_HOST_CONTROL2);
+
+			if (ctrl2 & SDHCI_CTRL_HS400) {
+				ctrl2 &= ~SDHCI_CTRL_HS400;
+				sdhci_writew(host, ctrl2, SDHCI_HOST_CONTROL2);
+				ctrl2 = sdhci_readw(host, SDHCI_HOST_CONTROL2);
+				ctrl2 |= SDHCI_CTRL_HS400;
+				sdhci_writew(host, ctrl2, SDHCI_HOST_CONTROL2);
+				ndelay(300);
+			}
+		}
 	} else {
 		am654_sdhci_setup_delay_chain(plat, mode);
 		plat->dll_enable = false;
@@ -712,6 +729,12 @@ static const struct soc_attr am654_sdhci_alt_otap_attr[] = {
 	{ /* sentinel */ }
 };
 
+static const struct soc_attr sdhci_am654_hs400_rx_fifo_corrupt[] = {
+	{ .family = "AM62PX" },
+	{ .family = "J722S" },
+	{ /* sentinel */ }
+};
+
 static int sdhci_am654_get_otap_delay(struct udevice *dev,
 				      struct mmc_config *cfg)
 {
@@ -814,6 +837,10 @@ static int am654_sdhci_probe(struct udevice *dev)
 		dev_info(dev, "Disable descoped HS400 mode for this silicon revision\n");
 		plat->cfg.host_caps &= ~(MMC_MODE_HS400 | MMC_MODE_HS400_ES);
 	}
+
+	soc = soc_device_match(sdhci_am654_hs400_rx_fifo_corrupt);
+	if (soc)
+		plat->quirks |= SDHCI_AM654_QUIRK_HS400_RX_FIFO_CORRUPT;
 
 	host->mmc->priv = host;
 	upriv->mmc = host->mmc;
