@@ -100,6 +100,7 @@ int wkup_r5f_am62_lpm_meta_data_addr(u64 *meta_data_addr)
 	struct ofnode_phandle_args memregion_phandle;
 	ofnode memregion;
 	ofnode wkup_bus;
+	int index;
 	int ret;
 
 	wkup_bus = ofnode_path("/bus@f0000/bus@b00000");
@@ -114,20 +115,24 @@ int wkup_r5f_am62_lpm_meta_data_addr(u64 *meta_data_addr)
 		return -EINVAL;
 	}
 
+	index = ofnode_stringlist_search(memregion, "memory-region-names", "lpm-metadata");
+	if (index < 0) {
+		printf("Failed to find lpm-metadata memory region\n");
+		return index;
+	}
+
 	ret = ofnode_parse_phandle_with_args(memregion, "memory-region", NULL,
-					     0, 1, &memregion_phandle);
+					     0, index, &memregion_phandle);
 	if (ret) {
-		printf("Failed to parse phandle for second memory region\n");
+		printf("Failed to parse phandle for lpm-metadata memory region\n");
 		return ret;
 	}
 
 	ret = ofnode_read_u64_index(memregion_phandle.node, "reg", 0, meta_data_addr);
 	if (ret) {
-		printf("Failed to read memory region offset\n");
+		printf("Failed to read lpm-metadata memory region address\n");
 		return ret;
 	}
-
-	*meta_data_addr += K3_R5_MEMREGION_LPM_METADATA_OFFSET;
 
 	return 0;
 }
