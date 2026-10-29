@@ -798,40 +798,95 @@ static void dss_vp_go(struct tidss_drv_priv *priv, u32 hw_videoport)
 
 bool is_pipeline_components_enabled(ofnode endpoint, ofnode prev)
 {
-	ofnode ports_parent = ofnode_graph_get_port_parent(endpoint);
-	ofnode ports = ofnode_find_subnode(ports_parent, "ports");
-	ofnode port, local_endpoint, remote_endpoint;
+	ofnode ports_parent, ports, single_port, port, local_endpoint;
+	ofnode remote_endpoint, port_endpoint;
+	bool has_outgoing_connection;
+	const char *parent_name;
+
+	if (!ofnode_valid(endpoint))
+		return false;
+
+	ports_parent = ofnode_graph_get_port_parent(endpoint);
 
 	if (!ofnode_valid(ports_parent))
 		return false;
 
-	if (strstr(ofnode_get_name(ports_parent), "dss")) {
+	ports = ofnode_find_subnode(ports_parent, "ports");
+
+	/* Check if this is a sink device without "ports" subnode */
+	if (!ofnode_valid(ports)) {
+		parent_name = ofnode_get_name(ports_parent);
+
+		/* Skip DSS nodes */
+		if (parent_name && strstr(parent_name, "dss"))
+			return false;
+
 		/*
-		 * If we reach dss again, return true. In the case of a dual-link OLDI,
-		 * we have 2 ports. While traversing oldi@0, this API also traverses oldi@1
-		 * and hence it will reach dss_ports again. If it reaches dss_ports,
-		 * that means every element in the pipeline is enabled already, and hence
-		 * if dss is reached, return true.
+		 * Check if device has a single port that doesn't connect to
+		 * another device
+		 */
+		single_port = ofnode_find_subnode(ports_parent, "port");
+		if (ofnode_valid(single_port)) {
+			has_outgoing_connection = false;
+
+			/* Check if port has outgoing connections */
+			ofnode_for_each_subnode(port_endpoint, single_port) {
+				if (strncmp(ofnode_get_name(port_endpoint),
+					    "endpoint", 8) == 0) {
+					remote_endpoint =
+						ofnode_graph_get_remote_endpoint(port_endpoint);
+					if (ofnode_valid(remote_endpoint) &&
+					    !ofnode_equal(remote_endpoint, prev))
+						has_outgoing_connection = true;
+				}
+			}
+
+			/*
+			 * If device has single port with no outgoing connections,
+			 * it's a sink
+			 */
+			if (!has_outgoing_connection)
+				return true;
+		}
+		return false;
+	}
+
+	parent_name = ofnode_get_name(ports_parent);
+	if (parent_name && strstr(parent_name, "dss")) {
+		/*
+		 * If we reach dss again, return true. In the case of a
+		 * dual-link OLDI, we have 2 ports. While traversing oldi@0,
+		 * this API also traverses oldi@1 and hence it will reach
+		 * dss_ports again. If it reaches dss_ports, that means every
+		 * element in the pipeline is enabled already, and hence if
+		 * dss is reached, return true.
 		 */
 		return true;
 	}
 
 	/*
-	 *Traverse all endpoints of the ports node.
+	 * Traverse all endpoints of the ports node.
 	 */
 	ofnode_for_each_subnode(port, ports) {
 		if (strncmp(ofnode_get_name(port), "port", 4))
 			continue;
+
 		ofnode_for_each_subnode(local_endpoint, port) {
 			if (strncmp(ofnode_get_name(local_endpoint), "endpoint", 8))
 				continue;
-			remote_endpoint = ofnode_graph_get_remote_endpoint(local_endpoint);
-			if (!ofnode_valid(remote_endpoint))
-				return true;
-			if (prev.np == remote_endpoint.np)
+
+			remote_endpoint =
+				ofnode_graph_get_remote_endpoint(local_endpoint);
+
+			if (!ofnode_valid(remote_endpoint) ||
+			    ofnode_equal(remote_endpoint, prev))
 				continue;
-			return ofnode_is_enabled(remote_endpoint) &&
-			       is_pipeline_components_enabled(remote_endpoint, local_endpoint);
+
+			if (ofnode_is_enabled(remote_endpoint))
+				return is_pipeline_components_enabled(remote_endpoint,
+								      local_endpoint);
+
+			return false;
 		}
 	}
 	return true;
