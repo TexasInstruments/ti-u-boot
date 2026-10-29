@@ -992,6 +992,18 @@ static int tidss_enable_pipeline_components(struct tidss_drv_priv *priv)
 				priv->bridge_dev = bridge_dev;
 				priv->active_hw_vps[active_pipelines++] = hw_videoport;
 				break;
+			} else if (strstr(ofnode_get_name(remote_port), "hdmi")) {
+				struct udevice *bridge_dev = NULL;
+				int ret;
+
+				ret = uclass_first_device_err(UCLASS_VIDEO_BRIDGE, &bridge_dev);
+				if (ret && !bridge_dev) {
+					dev_warn(priv->dev, "HDMI: bridge not found: %d\n", ret);
+					break;
+				}
+				priv->bridge_dev = bridge_dev;
+				priv->active_hw_vps[active_pipelines++] = hw_videoport;
+				break;
 			}
 		}
 	}
