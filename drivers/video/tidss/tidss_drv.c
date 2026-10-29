@@ -961,10 +961,7 @@ static int tidss_drv_probe(struct udevice *dev)
 
 	priv->dev = dev;
 
-	if (device_is_compatible(dev, "ti,am62l-dss"))
-		priv->feat = &dss_am62l_feats;
-	else
-		priv->feat = &dss_am625_feats;
+	priv->feat = (const struct dss_features *)dev_get_driver_data(dev);
 
 	priv->pixel_format = DSS_FORMAT_XRGB8888;
 
@@ -1118,12 +1115,12 @@ static int tidss_drv_probe(struct udevice *dev)
 	for (i = 0; i < priv->active_pipelines; i++) {
 
 		ret = clk_get_by_name(dev,
-				      dss_am625_feats.vpclk_name[priv->active_hw_vps[i]],
+				      priv->feat->vpclk_name[priv->active_hw_vps[i]],
 				      &priv->vp_clk[priv->active_hw_vps[i]]);
 		if (ret) {
 			dev_err(dev, "video port %d clock get error %d (clk_name=%s)\n",
 				i, ret,
-				dss_am625_feats.vpclk_name[priv->active_hw_vps[i]]);
+				priv->feat->vpclk_name[priv->active_hw_vps[i]]);
 			return ret;
 		}
 		dss_ovr_set_plane(priv, hw_plane, priv->active_hw_vps[i], 0, 0, 0);
@@ -1209,9 +1206,9 @@ static int tidss_drv_bind(struct udevice *dev)
 }
 
 static const struct udevice_id tidss_drv_ids[] = {
-	{ .compatible = "ti,am625-dss" },
-	{ .compatible = "ti,am62p-dss" },
-	{ .compatible = "ti,am62l-dss" },
+	{ .compatible = "ti,am625-dss", .data = (ulong)&dss_am625_feats },
+	{ .compatible = "ti,am62p-dss", .data = (ulong)&dss_am625_feats },
+	{ .compatible = "ti,am62l-dss", .data = (ulong)&dss_am62l_feats },
 	{ }
 };
 
