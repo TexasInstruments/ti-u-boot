@@ -42,7 +42,6 @@
 	      <0x00 0x60000000 0x00 0x08000000>;
 };
 
-/delete-node/ &framebuffer0;
 /delete-node/ &dss0;
 /delete-node/ &sii9022;
 /delete-node/ &hdmi0;
