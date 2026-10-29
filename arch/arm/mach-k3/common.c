@@ -695,6 +695,7 @@ void spl_board_prepare_for_boot(void)
 		panic("%s: Failed to boot in falcon mode: %d\n", __func__, ret);
 #endif
 #if !(defined(CONFIG_SYS_ICACHE_OFF) && defined(CONFIG_SYS_DCACHE_OFF))
+	icache_disable();
 	dcache_disable();
 #endif
 #if IS_ENABLED(CONFIG_SPL_DMA) && IS_ENABLED(CONFIG_SPL_DM_DEVICE_REMOVE)

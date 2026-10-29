@@ -676,6 +676,7 @@ void board_init_r(gd_t *dummy1, ulong dummy2)
 	debug(">>" PHASE_PROMPT "board_init_r()\n");
 
 	spl_set_bd();
+	enable_caches();
 
 	if (IS_ENABLED(CONFIG_SPL_SYS_MALLOC)) {
 		mem_malloc_init(SPL_SYS_MALLOC_START, SPL_SYS_MALLOC_SIZE);
