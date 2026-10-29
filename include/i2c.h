@@ -30,6 +30,7 @@ enum dm_i2c_chip_flags {
 	DM_I2C_CHIP_10BIT	= 1 << 0, /* Use 10-bit addressing */
 	DM_I2C_CHIP_RD_ADDRESS	= 1 << 1, /* Send address for each read byte */
 	DM_I2C_CHIP_WR_ADDRESS	= 1 << 2, /* Send address for each write byte */
+	DM_I2C_CHIP_IGNORE_NAK	= 1 << 3, /* Treat a NAK from this chip as success */
 };
 
 /** enum i2c_speed_mode - standard I2C speed modes */

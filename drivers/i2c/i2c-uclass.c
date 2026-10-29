@@ -65,6 +65,7 @@ static int i2c_setup_offset(struct dm_i2c_chip *chip, uint offset,
 		msg->addr |= (offset >> (8 * offset_len)) &
 			chip->chip_addr_offset_mask;
 	msg->flags = chip->flags & DM_I2C_CHIP_10BIT ? I2C_M_TEN : 0;
+	msg->flags |= chip->flags & DM_I2C_CHIP_IGNORE_NAK ? I2C_M_IGNORE_NAK : 0;
 	msg->len = chip->offset_len;
 	msg->buf = offset_buf;
 	if (!offset_len)
@@ -150,6 +151,7 @@ int dm_i2c_read(struct udevice *dev, uint offset, uint8_t *buffer, int len)
 	if (len) {
 		ptr->addr = msg->addr;
 		ptr->flags = chip->flags & DM_I2C_CHIP_10BIT ? I2C_M_TEN : 0;
+		ptr->flags |= chip->flags & DM_I2C_CHIP_IGNORE_NAK ? I2C_M_IGNORE_NAK : 0;
 		ptr->flags |= I2C_M_RD;
 		ptr->len = len;
 		ptr->buf = buffer;
@@ -283,6 +285,7 @@ static int i2c_probe_chip(struct udevice *bus, uint chip_addr,
 	/* Probe with a zero-length message */
 	msg->addr = chip_addr;
 	msg->flags = chip_flags & DM_I2C_CHIP_10BIT ? I2C_M_TEN : 0;
+	msg->flags |= chip_flags & DM_I2C_CHIP_IGNORE_NAK ? I2C_M_IGNORE_NAK : 0;
 	msg->len = 0;
 	msg->buf = NULL;
 
