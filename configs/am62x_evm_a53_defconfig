@@ -157,3 +157,4 @@ CONFIG_SPL_GZIP=y
 #include <configs/k3_efi_capsule.config>
 #include <configs/am62x_a53_usbdfu.config>
 #include <configs/am62x_a53_splashscreen.config>
+#include <configs/am625_evm_oldi-microtips-mf101hie-panel.config>
