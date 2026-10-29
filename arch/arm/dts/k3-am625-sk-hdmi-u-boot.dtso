@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * HDMI overlay for AM625 EVM U-Boot
+ * Copyright (C) 2026 Texas Instruments Incorporated - https://www.ti.com/
+ */
+
+&dss {
+	bootph-all;
+	compatible = "ti,am62p-dss";
+	status = "okay";
+	clocks = <&k3_clks 186 6>,
+			 <&k3_clks 186 0>,
+			 <&k3_clks 186 2>;
+};
+
+&main_dss0_pins_default {
+	bootph-all;
+	status = "okay";
+};
+
+&dss_ports {
+	bootph-all;
+	/* VP1: DPI Output to HDMI Bridge */
+	port@1 {
+		reg = <1>;
+		bootph-all;
+
+		dpi_out: endpoint {
+			remote-endpoint = <&sii9022_in>;
+			bootph-all;
+		};
+	};
+};
+
+/* HDMI Connector - Reference to main device tree */
+&hdmi0 {
+	bootph-all;
+	status = "okay";
+
+	port {
+		bootph-all;
+
+		hdmi_connector_in: endpoint {
+			bootph-all;
+		};
+	};
+};
+
+/* I2C Configuration for HDMI Bridge */
+&main_i2c0 {
+	bootph-all;
+	status = "okay";
+};
+
+&main_i2c1 {
+	bootph-all;
+	status = "okay";
+};
+
+/* SII9022 HDMI Bridge - Reference to main device tree */
+&sii9022 {
+	bootph-all;
+	compatible = "sil,sii9022";
+	status = "okay";
+
+	ports {
+		bootph-all;
+
+		port@0 {
+			bootph-all;
+
+			sii9022_in: endpoint {
+				bootph-all;
+			};
+		};
+
+		port@1 {
+			bootph-all;
+
+			sii9022_out: endpoint {
+				bootph-all;
+			};
+		};
+	};
+};
