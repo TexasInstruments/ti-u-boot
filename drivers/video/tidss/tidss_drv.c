@@ -509,7 +509,8 @@ void dss_vp_enable(struct tidss_drv_priv *priv, u32 hw_videoport, struct display
 	VP_REG_FLD_MOD(priv, hw_videoport, DSS_VP_CONTROL, 1, 0, 0);
 
 	if (priv->feat->subrev == DSS_AM62L &&
-	    priv->feat->vp_bus_type[hw_videoport] == DSS_VP_DPI && priv->bridge_dev) {
+	    priv->feat->vp_bus_type[hw_videoport] == DSS_VP_DPI && priv->bridge_dev &&
+	    !strstr(priv->bridge_dev->name, "hdmi")) {
 		VP_REG_FLD_MOD(priv, hw_videoport, DSS_VP_CONTROL, 0, 6, 6);
 	}
 }
