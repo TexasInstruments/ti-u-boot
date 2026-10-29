@@ -19,7 +19,5 @@
 
 /delete-node/ &framebuffer0;
 /delete-node/ &dss;
-/delete-node/ &microtips_mf101hie_panel;
 /delete-node/ &sii9022;
 /delete-node/ &hdmi0;
-/delete-node/ &panel_lvds;
