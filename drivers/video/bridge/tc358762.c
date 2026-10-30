@@ -172,12 +172,6 @@ static int tc358762_enable(struct udevice *dev)
 		return ret;
 	}
 
-	ret = dsi_host_start_video(dev->parent);
-	if (ret) {
-		dev_warn(dev, "%s: start_video failed: %d\n", __func__, ret);
-		return ret;
-	}
-
 	if (dm_gpio_is_valid(&priv->led_en))
 		dm_gpio_set_value(&priv->led_en, 1);
 
