@@ -25,7 +25,6 @@
 #include <linux/delay.h>
 #include <linux/drm_dp_helper.h>
 #include <asm/gpio.h>
-#include "../cadence/cdns-dsi-core.h"
 
 /* Register definitions */
 #define SN_DEVICE_ID_REGS			0x00
@@ -733,12 +732,6 @@ static int ti_sn65dsi86_pre_enable(struct udevice *dev)
 			dev_err(dev, "dsi_host_enable failed: %d\n", ret);
 			return ret;
 		}
-
-		struct cdns_dsi_host_priv *dsi_priv =
-			dev_get_priv(priv->dsi_host);
-		if (dsi_priv && dsi_priv->rounded_pclk_khz)
-			priv->timing.pixelclock.typ =
-				dsi_priv->rounded_pclk_khz;
 	}
 
 	return 0;
