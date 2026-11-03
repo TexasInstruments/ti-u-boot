@@ -4,6 +4,7 @@
  */
 
 #include <avb_verify.h>
+#include <avb_root_of_trust.h>
 #include <command.h>
 #include <env.h>
 #include <image.h>
@@ -287,6 +288,18 @@ int do_avb_verify_part(struct cmd_tbl *cmdtp, int flag,
 				unlocked,
 				AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE,
 				&out_data);
+
+	/* Store Root of Trust data immediately after AVB verification */
+	if (IS_ENABLED(CONFIG_AVB_ROOT_OF_TRUST)) {
+		printf("INFO: Storing Root of Trust data from AVB verification...\n");
+		ret = avb_store_root_of_trust_from_verification(out_data,
+								slot_result);
+		if (ret != 0)
+			printf("WARN: Failed to store Root of Trust data (ret=%d)\n",
+			       ret);
+		else
+			printf("INFO: Root of Trust data stored successfully\n");
+	}
 
 	/*
 	 * LOCKED devices with custom root of trust setup is not supported (YELLOW)

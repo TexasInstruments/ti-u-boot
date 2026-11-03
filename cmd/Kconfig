@@ -3109,6 +3109,19 @@ config CMD_AVB
 	    avb write_part - write data to partition
 	    avb verify - run full verification chain
 
+config CMD_AVB_ROT
+	bool "avb_rot - Android Verified Boot Root of Trust commands"
+	depends on AVB_ROOT_OF_TRUST
+	help
+	  Enables "avb_rot" command for Android Verified Boot Root of Trust
+	  functionality. This includes subcommands:
+	    avb_rot setup - Setup Root of Trust from AVB verification
+	    avb_rot legacy - Setup Root of Trust using legacy method
+	    avb_rot info - Show Root of Trust implementation information
+
+	  These commands are useful for testing and debugging Root of Trust
+	  functionality during development and integration with Android KeyMint.
+
 config CMD_STACKPROTECTOR_TEST
 	bool "Test command for stack protector"
 	depends on STACKPROTECTOR

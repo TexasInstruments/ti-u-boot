@@ -11,6 +11,7 @@
 #include <android_image.h>
 #if CONFIG_IS_ENABLED(AVB_VERIFY)
 #include <avb_verify.h>
+#include <avb_root_of_trust.h>
 #endif
 #include <bcb.h>
 #include <blk.h>
@@ -466,6 +467,18 @@ static int run_avb_verification(struct bootflow *bflow)
 				 AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE,
 				 &out_data);
 
+	if (CONFIG_IS_ENABLED(AVB_ROOT_OF_TRUST)) {
+		/* Store Root of Trust data immediately after AVB verification */
+		printf("INFO: [Bootmeth] Storing Root of Trust data from AVB verification...\n");
+		ret = avb_store_root_of_trust_from_verification(out_data,
+								result);
+		if (ret != 0)
+			printf("WARN: [Bootmeth] Failed to store Root of Trust data (ret=%d)\n",
+			       ret);
+		else
+			printf("INFO: [Bootmeth] Root of Trust data stored successfully\n");
+	}
+
 	if (!unlocked) {
 		/* When device is locked, we only accept AVB_SLOT_VERIFY_RESULT_OK */
 		if (result != AVB_SLOT_VERIFY_RESULT_OK) {
@@ -511,6 +524,7 @@ static int run_avb_verification(struct bootflow *bflow)
 
 	return log_msg_ret("avb cmdline", ret);
 }
+
 #else
 static int run_avb_verification(struct bootflow *bflow)
 {
@@ -525,6 +539,7 @@ static int run_avb_verification(struct bootflow *bflow)
 
 	return 0;
 }
+
 #endif /* AVB_VERIFY */
 
 static int append_bootargs_to_cmdline(struct bootflow *bflow)

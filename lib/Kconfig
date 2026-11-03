@@ -559,6 +559,24 @@ config LIBAVB
 	  device. Introduces such features as boot chain of trust, rollback
 	  protection etc.
 
+config AVB_ROOT_OF_TRUST
+	bool "Android Verified Boot Root of Trust support"
+	depends on AVB_VERIFY
+	depends on OPTEE_TA_AVB
+	help
+	  This enables Root of Trust functionality for Android Verified Boot 2.0.
+	  Root of Trust provides cryptographic evidence of the device's boot state
+	  and verified boot chain to Android's KeyMint service for key attestation.
+
+	  When enabled, the bootloader will collect and store Root of Trust data
+	  during AVB verification, including the verified boot key, device lock
+	  state, verified boot state, and boot image hash. This data is securely
+	  stored via the AVB Trusted Application in OP-TEE for later retrieval
+	  by the Android KeyMint Trusted Application.
+
+	  This feature requires the AVB TA (CONFIG_OPTEE_TA_AVB) to be enabled
+	  to securely store and manage Root of Trust data.
+
 endmenu
 
 menu "Hashing Support"
