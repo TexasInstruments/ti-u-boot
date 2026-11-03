@@ -9,6 +9,7 @@
 #include <../lib/libavb/libavb.h>
 #include <mapmem.h>
 #include <mmc.h>
+#include <stdbool.h>
 
 #define AVB_MAX_ARGS			1024
 #define VERITY_TABLE_OPT_RESTART	"restart_on_corruption"
@@ -54,6 +55,14 @@ char *avb_set_ignore_corruption(const char *cmdline);
 char *append_cmd_line(char *cmdline_orig, char *cmdline_new);
 const char *str_avb_io_error(AvbIOResult res);
 const char *str_avb_slot_error(AvbSlotVerifyResult res);
+
+/* Device lock state functions */
+AvbIOResult write_is_device_unlocked(AvbOps *ops, bool is_unlocked);
+bool avb_is_device_unlocked(void);
+
+/* Critical partitions lock state functions */
+AvbIOResult write_is_device_critical_unlocked(AvbOps *ops, bool is_unlocked);
+bool avb_is_device_critical_unlocked(void);
 /**
  * ============================================================================
  * I/O helper inline functions

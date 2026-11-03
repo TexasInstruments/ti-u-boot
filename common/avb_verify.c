@@ -6,6 +6,7 @@
 #include <avb_verify.h>
 #include <blk.h>
 #include <cpu_func.h>
+#include <env.h>
 #include <image.h>
 #include <malloc.h>
 #include <part.h>
@@ -621,194 +622,7 @@ static AvbIOResult invoke_func(struct AvbOpsData *ops_data, u32 func,
 		return AVB_IO_RESULT_ERROR_IO;
 	}
 }
-#endif
 
-/**
- * read_rollback_index() - gets the rollback index corresponding to the
- * location of given by @out_rollback_index.
- *
- * @ops: contains AvbOps handlers
- * @rollback_index_slot:
- * @out_rollback_index: used to write a retrieved rollback index.
- *
- * @return
- *       AVB_IO_RESULT_OK, if the roolback index was retrieved
- */
-static AvbIOResult read_rollback_index(AvbOps *ops,
-				       size_t rollback_index_slot,
-				       u64 *out_rollback_index)
-{
-#ifndef CONFIG_OPTEE_TA_AVB
-	/* For now we always return 0 as the stored rollback index. */
-	debug("%s: rollback protection is not implemented\n", __func__);
-
-	if (out_rollback_index)
-		*out_rollback_index = 0;
-
-	return AVB_IO_RESULT_OK;
-#else
-	AvbIOResult rc;
-	struct tee_param param[2];
-
-	if (rollback_index_slot >= TA_AVB_MAX_ROLLBACK_LOCATIONS)
-		return AVB_IO_RESULT_ERROR_NO_SUCH_VALUE;
-
-	memset(param, 0, sizeof(param));
-	param[0].attr = TEE_PARAM_ATTR_TYPE_VALUE_INPUT;
-	param[0].u.value.a = rollback_index_slot;
-	param[1].attr = TEE_PARAM_ATTR_TYPE_VALUE_OUTPUT;
-
-	rc = invoke_func(ops->user_data, TA_AVB_CMD_READ_ROLLBACK_INDEX,
-			 ARRAY_SIZE(param), param);
-	if (rc)
-		return rc;
-
-	*out_rollback_index = (u64)param[1].u.value.a << 32 |
-			      (u32)param[1].u.value.b;
-	return AVB_IO_RESULT_OK;
-#endif
-}
-
-/**
- * write_rollback_index() - sets the rollback index corresponding to the
- * location of given by @out_rollback_index.
- *
- * @ops: contains AvbOps handlers
- * @rollback_index_slot:
- * @rollback_index: rollback index to write.
- *
- * @return
- *       AVB_IO_RESULT_OK, if the roolback index was retrieved
- */
-static AvbIOResult write_rollback_index(AvbOps *ops,
-					size_t rollback_index_slot,
-					u64 rollback_index)
-{
-#ifndef CONFIG_OPTEE_TA_AVB
-	/* For now this is a no-op. */
-	debug("%s: rollback protection is not implemented\n", __func__);
-
-	return AVB_IO_RESULT_OK;
-#else
-	struct tee_param param[2];
-
-	if (rollback_index_slot >= TA_AVB_MAX_ROLLBACK_LOCATIONS)
-		return AVB_IO_RESULT_ERROR_NO_SUCH_VALUE;
-
-	memset(param, 0, sizeof(param));
-	param[0].attr = TEE_PARAM_ATTR_TYPE_VALUE_INPUT;
-	param[0].u.value.a = rollback_index_slot;
-	param[1].attr = TEE_PARAM_ATTR_TYPE_VALUE_INPUT;
-	param[1].u.value.a = (u32)(rollback_index >> 32);
-	param[1].u.value.b = (u32)rollback_index;
-
-	return invoke_func(ops->user_data, TA_AVB_CMD_WRITE_ROLLBACK_INDEX,
-			   ARRAY_SIZE(param), param);
-#endif
-}
-
-/**
- * read_is_device_unlocked() - gets whether the device is unlocked
- *
- * @ops: contains AVB ops handlers
- * @out_is_unlocked: device unlock state is stored here, true if unlocked,
- *       false otherwise
- *
- * @return:
- *       AVB_IO_RESULT_OK: state is retrieved successfully
- *       AVB_IO_RESULT_ERROR_IO: an error occurred
- */
-static AvbIOResult read_is_device_unlocked(AvbOps *ops, bool *out_is_unlocked)
-{
-#ifndef CONFIG_OPTEE_TA_AVB
-	/* For now we always return that the device is unlocked. */
-	debug("%s: device locking is not implemented\n", __func__);
-
-	*out_is_unlocked = true;
-
-	return AVB_IO_RESULT_OK;
-#else
-	AvbIOResult rc;
-	struct tee_param param = { .attr = TEE_PARAM_ATTR_TYPE_VALUE_OUTPUT };
-
-	rc = invoke_func(ops->user_data, TA_AVB_CMD_READ_LOCK_STATE, 1, &param);
-	if (rc)
-		return rc;
-	*out_is_unlocked = !param.u.value.a;
-	return AVB_IO_RESULT_OK;
-#endif
-}
-
-/**
- * get_unique_guid_for_partition() - gets the GUID for a partition identified
- * by a string name
- *
- * @ops: contains AVB ops handlers
- * @partition: partition name (NUL-terminated UTF-8 string)
- * @guid_buf: buf, used to copy in GUID string. Example of value:
- *      527c1c6d-6361-4593-8842-3c78fcd39219
- * @guid_buf_size: @guid_buf buffer size
- *
- * @return:
- *      AVB_IO_RESULT_OK, on success (GUID found)
- *      AVB_IO_RESULT_ERROR_IO, if incorrect buffer size (@guid_buf_size) was
- *             provided
- *      AVB_IO_RESULT_ERROR_NO_SUCH_PARTITION, if partition was not found
- */
-static AvbIOResult get_unique_guid_for_partition(AvbOps *ops,
-						 const char *partition,
-						 char *guid_buf,
-						 size_t guid_buf_size)
-{
-	struct mmc_part *part;
-	size_t uuid_size;
-
-	part = get_partition(ops, partition);
-	if (!part)
-		return AVB_IO_RESULT_ERROR_NO_SUCH_PARTITION;
-
-	uuid_size = sizeof(part->info.uuid);
-	if (uuid_size > guid_buf_size)
-		return AVB_IO_RESULT_ERROR_IO;
-
-	memcpy(guid_buf, part->info.uuid, uuid_size);
-	guid_buf[uuid_size - 1] = 0;
-
-	return AVB_IO_RESULT_OK;
-}
-
-/**
- * get_size_of_partition() - gets the size of a partition identified
- * by a string name
- *
- * @ops: contains AVB ops handlers
- * @partition: partition name (NUL-terminated UTF-8 string)
- * @out_size_num_bytes: returns the value of a partition size
- *
- * @return:
- *      AVB_IO_RESULT_OK, on success (GUID found)
- *      AVB_IO_RESULT_ERROR_INSUFFICIENT_SPACE, out_size_num_bytes is NULL
- *      AVB_IO_RESULT_ERROR_NO_SUCH_PARTITION, if partition was not found
- */
-static AvbIOResult get_size_of_partition(AvbOps *ops,
-					 const char *partition,
-					 u64 *out_size_num_bytes)
-{
-	struct mmc_part *part;
-
-	if (!out_size_num_bytes)
-		return AVB_IO_RESULT_ERROR_INSUFFICIENT_SPACE;
-
-	part = get_partition(ops, partition);
-	if (!part)
-		return AVB_IO_RESULT_ERROR_NO_SUCH_PARTITION;
-
-	*out_size_num_bytes = part->info.blksz * part->info.size;
-
-	return AVB_IO_RESULT_OK;
-}
-
-#ifdef CONFIG_OPTEE_TA_AVB
 static AvbIOResult read_persistent_value(AvbOps *ops,
 					 const char *name,
 					 size_t buffer_size,
@@ -926,7 +740,379 @@ free_name:
 
 	return rc;
 }
+#else
+/* Stubs for the IS_ENABLED(CONFIG_OPTEE_TA_AVB) callers below */
+static AvbIOResult invoke_func(struct AvbOpsData *ops_data, u32 func,
+			       ulong num_param, struct tee_param *param)
+{
+	return AVB_IO_RESULT_ERROR_IO;
+}
+
+static AvbIOResult read_persistent_value(AvbOps *ops,
+					 const char *name,
+					 size_t buffer_size,
+					 u8 *out_buffer,
+					 size_t *out_num_bytes_read)
+{
+	return AVB_IO_RESULT_ERROR_IO;
+}
+
+static AvbIOResult write_persistent_value(AvbOps *ops,
+					  const char *name,
+					  size_t value_size,
+					  const u8 *value)
+{
+	return AVB_IO_RESULT_ERROR_IO;
+}
 #endif
+
+/**
+ * read_rollback_index() - gets the rollback index corresponding to the
+ * location of given by @out_rollback_index.
+ *
+ * @ops: contains AvbOps handlers
+ * @rollback_index_slot:
+ * @out_rollback_index: used to write a retrieved rollback index.
+ *
+ * @return
+ *       AVB_IO_RESULT_OK, if the roolback index was retrieved
+ */
+static AvbIOResult read_rollback_index(AvbOps *ops,
+				       size_t rollback_index_slot,
+				       u64 *out_rollback_index)
+{
+#ifndef CONFIG_OPTEE_TA_AVB
+	/* For now we always return 0 as the stored rollback index. */
+	debug("%s: rollback protection is not implemented\n", __func__);
+
+	if (out_rollback_index)
+		*out_rollback_index = 0;
+
+	return AVB_IO_RESULT_OK;
+#else
+	AvbIOResult rc;
+	struct tee_param param[2];
+
+	if (rollback_index_slot >= TA_AVB_MAX_ROLLBACK_LOCATIONS)
+		return AVB_IO_RESULT_ERROR_NO_SUCH_VALUE;
+
+	memset(param, 0, sizeof(param));
+	param[0].attr = TEE_PARAM_ATTR_TYPE_VALUE_INPUT;
+	param[0].u.value.a = rollback_index_slot;
+	param[1].attr = TEE_PARAM_ATTR_TYPE_VALUE_OUTPUT;
+
+	rc = invoke_func(ops->user_data, TA_AVB_CMD_READ_ROLLBACK_INDEX,
+			 ARRAY_SIZE(param), param);
+	if (rc)
+		return rc;
+
+	*out_rollback_index = (u64)param[1].u.value.a << 32 |
+			      (u32)param[1].u.value.b;
+	return AVB_IO_RESULT_OK;
+#endif
+}
+
+/**
+ * write_rollback_index() - sets the rollback index corresponding to the
+ * location of given by @out_rollback_index.
+ *
+ * @ops: contains AvbOps handlers
+ * @rollback_index_slot:
+ * @rollback_index: rollback index to write.
+ *
+ * @return
+ *       AVB_IO_RESULT_OK, if the roolback index was retrieved
+ */
+static AvbIOResult write_rollback_index(AvbOps *ops,
+					size_t rollback_index_slot,
+					u64 rollback_index)
+{
+#ifndef CONFIG_OPTEE_TA_AVB
+	/* For now this is a no-op. */
+	debug("%s: rollback protection is not implemented\n", __func__);
+
+	return AVB_IO_RESULT_OK;
+#else
+	struct tee_param param[2];
+
+	if (rollback_index_slot >= TA_AVB_MAX_ROLLBACK_LOCATIONS)
+		return AVB_IO_RESULT_ERROR_NO_SUCH_VALUE;
+
+	memset(param, 0, sizeof(param));
+	param[0].attr = TEE_PARAM_ATTR_TYPE_VALUE_INPUT;
+	param[0].u.value.a = rollback_index_slot;
+	param[1].attr = TEE_PARAM_ATTR_TYPE_VALUE_INPUT;
+	param[1].u.value.a = (u32)(rollback_index >> 32);
+	param[1].u.value.b = (u32)rollback_index;
+
+	return invoke_func(ops->user_data, TA_AVB_CMD_WRITE_ROLLBACK_INDEX,
+			   ARRAY_SIZE(param), param);
+#endif
+}
+
+/**
+ * read_is_device_unlocked() - gets whether the device is unlocked
+ *
+ * @ops: contains AVB ops handlers
+ * @out_is_unlocked: device unlock state is stored here, true if unlocked,
+ *       false otherwise
+ *
+ * @return:
+ *       AVB_IO_RESULT_OK: state is retrieved successfully
+ *       AVB_IO_RESULT_ERROR_IO: an error occurred
+ */
+static AvbIOResult read_is_device_unlocked(AvbOps *ops, bool *out_is_unlocked)
+{
+	if (IS_ENABLED(CONFIG_OPTEE_TA_AVB)) {
+		/* Use AVB TA when both TA_AVB and fastboot locking are enabled */
+		AvbIOResult rc;
+		struct tee_param param = { .attr = TEE_PARAM_ATTR_TYPE_VALUE_OUTPUT };
+
+		debug("%s: reading device lock state via AVB TA\n", __func__);
+		rc = invoke_func(ops->user_data, TA_AVB_CMD_READ_LOCK_STATE, 1, &param);
+		if (rc) {
+			debug("%s: AVB TA failed (rc=%d), falling back to environment\n",
+			      __func__, rc);
+			return rc;
+		}
+		*out_is_unlocked = !param.u.value.a;
+		debug("%s: AVB TA returned lock_state=%llu (unlocked=%d)\n",
+		      __func__, (unsigned long long)param.u.value.a, *out_is_unlocked);
+
+	} else {
+		/* For systems without fastboot locking, always return unlocked */
+		debug("%s: device locking is not implemented, returning unlocked\n", __func__);
+		*out_is_unlocked = true;
+	}
+
+	return AVB_IO_RESULT_OK;
+}
+
+/**
+ * write_is_device_unlocked() - sets whether the device is unlocked
+ *
+ * @ops: contains AVB ops handlers
+ * @is_unlocked: device unlock state to set, true if unlocked,
+ *       false otherwise
+ *
+ * @return:
+ *       AVB_IO_RESULT_OK: state is set successfully
+ *       AVB_IO_RESULT_ERROR_IO: an error occurred
+ */
+AvbIOResult write_is_device_unlocked(AvbOps *ops, bool is_unlocked)
+{
+	AvbIOResult rc;
+
+	if (IS_ENABLED(CONFIG_OPTEE_TA_AVB)) {
+		/* Use AVB TA when available */
+		struct tee_param param = { .attr = TEE_PARAM_ATTR_TYPE_VALUE_INPUT };
+
+		debug("%s: setting device lock state via AVB TA (unlocked=%d)\n",
+		      __func__, is_unlocked);
+		/* TA expects lock state (opposite of unlock state) */
+		param.u.value.a = !is_unlocked;
+
+		rc = invoke_func(ops->user_data, TA_AVB_CMD_WRITE_LOCK_STATE, 1, &param);
+		if (rc != AVB_IO_RESULT_OK) {
+			debug("%s: AVB TA failed (rc=%d)\n", __func__, rc);
+			return rc;
+		}
+		return AVB_IO_RESULT_OK;
+	} else {
+		/* No AVB TA available */
+		debug("%s: AVB TA not available\n", __func__);
+		return AVB_IO_RESULT_ERROR_IO;
+	}
+}
+
+/**
+ * avb_is_device_unlocked() - checks if device is unlocked using AVB TA or environment
+ *
+ * This function can be called without AVB operations and will use the AVB TA
+ * if available, otherwise fall back to environment variables.
+ *
+ * @return: true if device is unlocked, false if locked
+ */
+bool avb_is_device_unlocked(void)
+{
+	if (IS_ENABLED(CONFIG_OPTEE_TA_AVB)) {
+		/* Try to use AVB TA if available */
+		struct AvbOpsData *ops_data;
+		AvbIOResult rc;
+		struct tee_param param = { .attr = TEE_PARAM_ATTR_TYPE_VALUE_OUTPUT };
+		bool is_unlocked;
+
+		/* Try to get AVB ops data - this is a best effort attempt */
+		ops_data = (struct AvbOpsData *)avb_ops_alloc(0);
+		if (ops_data) {
+			debug("%s: reading device lock state via AVB TA\n", __func__);
+			rc = invoke_func(ops_data, TA_AVB_CMD_READ_LOCK_STATE, 1, &param);
+			if (rc == AVB_IO_RESULT_OK) {
+				is_unlocked = !param.u.value.a;
+				debug("%s: AVB TA returned lock_state=%llu (unlocked=%d)\n",
+				      __func__, (unsigned long long)param.u.value.a, is_unlocked);
+				avb_ops_free(&ops_data->ops);
+				return is_unlocked;
+			}
+			debug("%s: AVB TA failed (rc=%d)\n", __func__, rc);
+			avb_ops_free(&ops_data->ops);
+		}
+	}
+
+	/* No AVB TA available or failed */
+	debug("%s: AVB TA not available, returning false (locked)\n", __func__);
+	return false;
+}
+
+/**
+ * write_is_device_critical_unlocked() - sets critical unlock state
+ *
+ * Uses a separate AVB persistent value "critical_unlocked" to manage
+ * critical lock state independently from the standard device lock state.
+ *
+ * @ops: contains AVB ops handlers
+ * @is_unlocked: device unlock state to write
+ *
+ * @return:
+ *      AVB_IO_RESULT_OK, on success
+ *      AVB_IO_RESULT_ERROR_*, on error
+ */
+AvbIOResult write_is_device_critical_unlocked(AvbOps *ops, bool is_unlocked)
+{
+	if (IS_ENABLED(CONFIG_OPTEE_TA_AVB)) {
+		/* Use AVB persistent value for critical unlock state */
+		AvbIOResult rc;
+		u8 unlock_state = is_unlocked ? 1 : 0;
+
+		debug("%s: setting critical lock state (unlocked=%d)\n",
+		      __func__, is_unlocked);
+
+		rc = write_persistent_value(ops, "critical_unlocked", 1, &unlock_state);
+		if (rc != AVB_IO_RESULT_OK) {
+			debug("%s: AVB persistent value write failed (rc=%d)\n", __func__, rc);
+			return rc;
+		}
+		debug("%s: AVB persistent value write successful\n", __func__);
+		return AVB_IO_RESULT_OK;
+	}
+	/* No AVB TA available */
+	debug("%s: AVB TA not available\n", __func__);
+	return AVB_IO_RESULT_ERROR_IO;
+}
+
+/**
+ * avb_is_device_critical_unlocked() - checks if critical unlocked
+ *
+ * Uses a separate AVB persistent value "critical_unlocked" to check
+ * critical lock state independently from the standard device lock state.
+ *
+ * @return: true if critical partitions are unlocked, false if locked
+ */
+bool avb_is_device_critical_unlocked(void)
+{
+	if (IS_ENABLED(CONFIG_OPTEE_TA_AVB)) {
+		/* Use AVB persistent value for critical unlock state */
+		AvbOps *ops;
+		AvbIOResult rc;
+		u8 unlock_state = 0;
+		size_t num_bytes_read = 0;
+		bool unlocked;
+
+		ops = avb_ops_alloc(0);
+		if (!ops)
+			return false;  /* Default to locked if no AVB available */
+
+		debug("%s: reading critical lock state\n", __func__);
+		rc = read_persistent_value(ops, "critical_unlocked", 1,
+					   &unlock_state, &num_bytes_read);
+		if (rc != AVB_IO_RESULT_OK || num_bytes_read != 1) {
+			debug("%s: read failed (rc=%d, bytes=%zu)\n",
+			      __func__, rc, num_bytes_read);
+			avb_ops_free(ops);
+			return false;  /* Default to locked if read fails */
+		}
+
+		unlocked = (unlock_state == 1);
+		debug("%s: critical_unlocked=%u (unlocked=%d)\n",
+		      __func__, unlock_state, unlocked);
+		avb_ops_free(ops);
+		return unlocked;
+	}
+
+	/* No AVB TA available or failed */
+	debug("%s: AVB TA not available, returning false (critical_locked)\n", __func__);
+	return false;
+}
+
+/**
+ * get_unique_guid_for_partition() - gets the GUID for a partition identified
+ * by a string name
+ *
+ * @ops: contains AVB ops handlers
+ * @partition: partition name (NUL-terminated UTF-8 string)
+ * @guid_buf: buf, used to copy in GUID string. Example of value:
+ *      527c1c6d-6361-4593-8842-3c78fcd39219
+ * @guid_buf_size: @guid_buf buffer size
+ *
+ * @return:
+ *      AVB_IO_RESULT_OK, on success (GUID found)
+ *      AVB_IO_RESULT_ERROR_IO, if incorrect buffer size (@guid_buf_size) was
+ *             provided
+ *      AVB_IO_RESULT_ERROR_NO_SUCH_PARTITION, if partition was not found
+ */
+static AvbIOResult get_unique_guid_for_partition(AvbOps *ops,
+						 const char *partition,
+						 char *guid_buf,
+						 size_t guid_buf_size)
+{
+	struct mmc_part *part;
+	size_t uuid_size;
+
+	part = get_partition(ops, partition);
+	if (!part)
+		return AVB_IO_RESULT_ERROR_NO_SUCH_PARTITION;
+
+	uuid_size = sizeof(part->info.uuid);
+	if (uuid_size > guid_buf_size)
+		return AVB_IO_RESULT_ERROR_IO;
+
+	memcpy(guid_buf, part->info.uuid, uuid_size);
+	guid_buf[uuid_size - 1] = 0;
+
+	return AVB_IO_RESULT_OK;
+}
+
+/**
+ * get_size_of_partition() - gets the size of a partition identified
+ * by a string name
+ *
+ * @ops: contains AVB ops handlers
+ * @partition: partition name (NUL-terminated UTF-8 string)
+ * @out_size_num_bytes: returns the value of a partition size
+ *
+ * @return:
+ *      AVB_IO_RESULT_OK, on success (GUID found)
+ *      AVB_IO_RESULT_ERROR_INSUFFICIENT_SPACE, out_size_num_bytes is NULL
+ *      AVB_IO_RESULT_ERROR_NO_SUCH_PARTITION, if partition was not found
+ */
+static AvbIOResult get_size_of_partition(AvbOps *ops,
+					 const char *partition,
+					 u64 *out_size_num_bytes)
+{
+	struct mmc_part *part;
+
+	if (!out_size_num_bytes)
+		return AVB_IO_RESULT_ERROR_INSUFFICIENT_SPACE;
+
+	part = get_partition(ops, partition);
+	if (!part)
+		return AVB_IO_RESULT_ERROR_NO_SUCH_PARTITION;
+
+	*out_size_num_bytes = part->info.blksz * part->info.size;
+
+	return AVB_IO_RESULT_OK;
+}
+
 
 /**
  * ============================================================================

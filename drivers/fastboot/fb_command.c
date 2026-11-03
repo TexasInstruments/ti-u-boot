@@ -5,6 +5,7 @@
 
 #include <command.h>
 #include <console.h>
+#include <cli.h>
 #include <env.h>
 #include <fastboot.h>
 #include <fastboot-internal.h>
@@ -14,12 +15,16 @@
 #include <part.h>
 #include <stdlib.h>
 #include <vsprintf.h>
+#include <stdbool.h>
 #include <linux/printk.h>
+#if (IS_ENABLED(CONFIG_AVB_VERIFY))
+#include <avb_verify.h>
+#endif
 
-/**
+	/**
  * image_size - final fastboot image size
  */
-static u32 image_size;
+	static u32 image_size;
 
 /**
  * fastboot_bytes_received - number of bytes received in the current download
@@ -44,6 +49,14 @@ static void oem_partconf(char *, char *);
 static void oem_bootbus(char *, char *);
 static void oem_console(char *, char *);
 static void oem_board(char *, char *);
+static void flashing_lock(char *, char *);
+static void flashing_unlock(char *, char *);
+static void flashing_lock_critical(char *, char *);
+static void flashing_unlock_critical(char *, char *);
+static void flashing_get_unlock_ability(char *, char *);
+static bool is_device_locked(void);
+static bool is_critical_partition(const char *partition);
+static bool is_device_critical_locked(void);
 static void run_ucmd(char *, char *);
 static void run_acmd(char *, char *);
 
@@ -118,6 +131,27 @@ static const struct {
 	[FASTBOOT_COMMAND_OEM_BOARD] = {
 		.command = "oem board",
 		.dispatch = CONFIG_IS_ENABLED(FASTBOOT_OEM_BOARD, (oem_board), (NULL))
+	},
+	[FASTBOOT_COMMAND_FLASHING_LOCK] = {
+		.command = "flashing lock",
+		.dispatch = CONFIG_IS_ENABLED(FASTBOOT_LOCKING, (flashing_lock), (NULL))
+	},
+	[FASTBOOT_COMMAND_FLASHING_UNLOCK] = {
+		.command = "flashing unlock",
+		.dispatch = CONFIG_IS_ENABLED(FASTBOOT_LOCKING, (flashing_unlock), (NULL))
+	},
+	[FASTBOOT_COMMAND_FLASHING_LOCK_CRITICAL] = {
+		.command = "flashing lock_critical",
+		.dispatch = CONFIG_IS_ENABLED(FASTBOOT_LOCKING, (flashing_lock_critical), (NULL))
+	},
+	[FASTBOOT_COMMAND_FLASHING_UNLOCK_CRITICAL] = {
+		.command = "flashing unlock_critical",
+		.dispatch = CONFIG_IS_ENABLED(FASTBOOT_LOCKING, (flashing_unlock_critical), (NULL))
+	},
+	[FASTBOOT_COMMAND_FLASHING_GET_UNLOCK_ABILITY] = {
+		.command = "flashing get_unlock_ability",
+		.dispatch = CONFIG_IS_ENABLED(FASTBOOT_LOCKING,
+					      (flashing_get_unlock_ability), (NULL))
 	},
 	[FASTBOOT_COMMAND_UCMD] = {
 		.command = "UCmd",
@@ -338,6 +372,20 @@ void fastboot_data_complete(char *response)
  */
 static void __maybe_unused flash(char *cmd_parameter, char *response)
 {
+	if (IS_ENABLED(CONFIG_FASTBOOT_LOCKING)) {
+		/* Check if device is locked before allowing flash */
+		if (is_device_locked()) {
+			fastboot_fail("Device is locked. Cannot flash partitions", response);
+			return;
+		}
+
+		/* Check if partition is critical and critical lock is enabled */
+		if (is_critical_partition(cmd_parameter) && is_device_critical_locked()) {
+			fastboot_fail("Critical partitions are locked. Cannot flash", response);
+			return;
+		}
+	}
+
 	if (IS_ENABLED(CONFIG_FASTBOOT_FLASH_MMC))
 		fastboot_mmc_flash_write(cmd_parameter, fastboot_buf_addr,
 					 image_size, response);
@@ -362,6 +410,23 @@ static void __maybe_unused flash(char *cmd_parameter, char *response)
  */
 static void __maybe_unused erase(char *cmd_parameter, char *response)
 {
+	if (IS_ENABLED(CONFIG_FASTBOOT_LOCKING)) {
+		/* Check if device is locked before allowing erase */
+		if (is_device_locked()) {
+			fastboot_fail("Device is locked. Cannot erase partitions",
+				      response);
+			return;
+		}
+
+		/* Check if partition is critical and critical lock is enabled */
+		if (is_critical_partition(cmd_parameter) &&
+		    is_device_critical_locked()) {
+			fastboot_fail("Critical partitions are locked. Cannot erase",
+				      response);
+			return;
+		}
+	}
+
 	if (IS_ENABLED(CONFIG_FASTBOOT_FLASH_MMC))
 		fastboot_mmc_erase(cmd_parameter, response);
 
@@ -581,3 +646,387 @@ static void __maybe_unused oem_board(char *cmd_parameter, char *response)
 {
 	fastboot_oem_board(cmd_parameter, (void *)fastboot_buf_addr, image_size, response);
 }
+
+#if (IS_ENABLED(CONFIG_FASTBOOT_LOCKING))
+/**
+ * is_device_locked() - Check if device is locked
+ *
+ * Returns: true if device is locked, false if unlocked
+ */
+static bool is_device_locked(void)
+{
+	if (IS_ENABLED(CONFIG_AVB_VERIFY) && IS_ENABLED(CONFIG_OPTEE_TA_AVB)) {
+		/* Use AVB helper function when all AVB locking components are available */
+		return !avb_is_device_unlocked();
+	} else {
+		/* Use environment variable */
+		char *device_unlocked = env_get("device_unlocked");
+
+		return (!device_unlocked || strcmp(device_unlocked, "1") != 0);
+	}
+}
+
+/**
+ * is_critical_partition() - Check if partition is critical
+ *
+ * @partition: Partition name to check
+ *
+ * Return: true if partition is critical, false otherwise
+ */
+static bool is_critical_partition(const char *partition)
+{
+	static const char * const critical_partitions[] = {
+		"bootloader",
+		"radio",
+		"sbl1",
+		"sbl2",
+		"sbl3",
+		"tz",
+		"rpm",
+		"aboot",
+		"xbl",
+		"xbl_config",
+		"tiboot3",
+		"tispl",
+		"u-boot",
+		NULL
+	};
+	int i;
+
+	for (i = 0; critical_partitions[i]; i++)
+		if (strcmp(partition, critical_partitions[i]) == 0)
+			return true;
+
+	return false;
+}
+
+/**
+ * is_device_critical_locked() - Check if device critical partitions are locked
+ *
+ * Return: true if critical partitions are locked, false if unlocked
+ */
+static bool is_device_critical_locked(void)
+{
+	if (IS_ENABLED(CONFIG_AVB_VERIFY)) {
+		/* Use AVB helper function when AVB is available */
+		return !avb_is_device_critical_unlocked();
+	} else {
+		/* Use environment variable */
+		char *critical_unlocked = env_get("critical_unlocked");
+
+		return (!critical_unlocked || strcmp(critical_unlocked, "1") != 0);
+	}
+}
+
+/**
+ * flashing_lock() - Execute the flashing lock command
+ *
+ * @cmd_parameter: Pointer to command parameter
+ * @response: Pointer to fastboot response buffer
+ */
+static void flashing_lock(char *cmd_parameter, char *response)
+{
+	if (IS_ENABLED(CONFIG_AVB_VERIFY) && IS_ENABLED(CONFIG_OPTEE_TA_AVB)) {
+		AvbOps *avb_ops;
+		AvbIOResult result;
+
+		/* Use AVB infrastructure when all components are available */
+		avb_ops = avb_ops_alloc(0);
+		if (avb_ops) {
+			result = write_is_device_unlocked(avb_ops, false);
+			avb_ops_free(avb_ops);
+			if (result == AVB_IO_RESULT_OK)
+				fastboot_okay(NULL, response);
+			else
+				fastboot_fail("Failed to lock device", response);
+			return;
+		}
+		fastboot_fail("AVB not available", response);
+	} else {
+		/* Use environment variable when AVB not available */
+		env_set("device_unlocked", "0");
+		env_save();
+		fastboot_okay(NULL, response);
+	}
+}
+
+/**
+ * flashing_unlock() - Execute the flashing unlock command
+ *
+ * @cmd_parameter: Pointer to command parameter
+ * @response: Pointer to fastboot response buffer
+ */
+static void flashing_unlock(char *cmd_parameter, char *response)
+{
+	char *unlock_ability;
+	char *confirm;
+	char *auto_confirm;
+
+	/* Check unlock_ability from environment */
+	unlock_ability = env_get("fastboot.unlock_ability");
+	if (!unlock_ability || strcmp(unlock_ability, "1") != 0) {
+		fastboot_fail("Unlock not allowed", response);
+		return;
+	}
+
+	/* If already unlocked, nothing to do */
+	if (!is_device_locked()) {
+		printf("Device is already unlocked\n");
+		fastboot_okay(NULL, response);
+		return;
+	}
+
+	/* Warning message */
+	printf("\n");
+	printf("WARNING: Unlocking the bootloader will void your warranty\n");
+	printf("and may compromise the security of your device.\n");
+	printf("This will also erase all user data.\n");
+	printf("\n");
+	printf("Type 'yes' to confirm unlock: ");
+
+	/* Get user confirmation */
+	confirm = malloc(16);
+	if (!confirm) {
+		fastboot_fail("Memory allocation failed", response);
+		return;
+	}
+
+	/* For automated testing, check environment variable */
+	auto_confirm = env_get("fastboot.unlock_confirm");
+	if (auto_confirm && !strcmp(auto_confirm, "yes")) {
+		strcpy(confirm, "yes");
+		printf("yes (auto-confirmed)\n");
+	} else {
+		/* Read user input */
+		if (!cli_readline_into_buffer("Confirm: ", confirm, 16)) {
+			free(confirm);
+			fastboot_fail("Unlock cancelled", response);
+			return;
+		}
+	}
+
+	if (strcmp(confirm, "yes") != 0) {
+		free(confirm);
+		printf("Unlock cancelled\n");
+		fastboot_fail("Unlock not confirmed", response);
+		return;
+	}
+	free(confirm);
+
+	if (IS_ENABLED(CONFIG_AVB_VERIFY) && IS_ENABLED(CONFIG_OPTEE_TA_AVB)) {
+		AvbOps *avb_ops;
+		AvbIOResult result;
+
+		/* Use AVB infrastructure when all components are available */
+		avb_ops = avb_ops_alloc(0);
+		if (avb_ops) {
+			result = write_is_device_unlocked(avb_ops, true);
+			avb_ops_free(avb_ops);
+			if (result == AVB_IO_RESULT_OK) {
+				printf("WARNING: Factory reset recommended\n");
+				fastboot_okay(NULL, response);
+			} else {
+				fastboot_fail("Failed to unlock device",
+					      response);
+			}
+			return;
+		}
+		fastboot_fail("AVB not available", response);
+	} else {
+		/* Use environment variable when AVB not available */
+		env_set("device_unlocked", "1");
+		env_save();
+		printf("WARNING: Factory reset recommended\n");
+		fastboot_okay(NULL, response);
+	}
+}
+
+/**
+ * flashing_lock_critical() - Execute the flashing lock_critical command
+ *
+ * @cmd_parameter: Pointer to command parameter
+ * @response: Pointer to fastboot response buffer
+ */
+static void flashing_lock_critical(char *cmd_parameter, char *response)
+{
+	if (IS_ENABLED(CONFIG_AVB_VERIFY)) {
+		AvbOps *avb_ops;
+		AvbIOResult result;
+
+		/* Use AVB infrastructure when available */
+		avb_ops = avb_ops_alloc(0);
+		if (avb_ops) {
+			result = write_is_device_critical_unlocked(avb_ops, false);
+			avb_ops_free(avb_ops);
+			if (result == AVB_IO_RESULT_OK)
+				fastboot_okay(NULL, response);
+			else
+				fastboot_fail("Failed to lock critical partitions", response);
+			return;
+		}
+		fastboot_fail("AVB not available", response);
+	} else {
+		/* Use environment variable when AVB not available */
+		env_set("critical_unlocked", "0");
+		env_save();
+		fastboot_okay(NULL, response);
+	}
+}
+
+/**
+ * flashing_unlock_critical() - Execute the flashing unlock_critical command
+ *
+ * @cmd_parameter: Pointer to command parameter
+ * @response: Pointer to fastboot response buffer
+ */
+static void flashing_unlock_critical(char *cmd_parameter, char *response)
+{
+	char *unlock_ability;
+	char *confirm;
+	char *auto_confirm;
+
+	/* Check unlock_ability from environment */
+	unlock_ability = env_get("fastboot.unlock_ability");
+	if (!unlock_ability || strcmp(unlock_ability, "1") != 0) {
+		fastboot_fail("Unlock not allowed", response);
+		return;
+	}
+
+	/* If already unlocked, nothing to do */
+	if (!is_device_critical_locked()) {
+		printf("Critical partitions are already unlocked\n");
+		fastboot_okay(NULL, response);
+		return;
+	}
+
+	/* Critical warning message */
+	printf("\n");
+	printf("CRITICAL WARNING: Unlocking critical partitions will\n");
+	printf("allow modification of bootloader and radio firmware.\n");
+	printf("This may PERMANENTLY DAMAGE your device and void warranty.\n");
+	printf("This operation is intended for advanced development only.\n");
+	printf("\n");
+	printf("Type 'yes' to confirm critical unlock: ");
+
+	/* Get user confirmation */
+	confirm = malloc(16);
+	if (!confirm) {
+		fastboot_fail("Memory allocation failed", response);
+		return;
+	}
+
+	/* For automated testing, check environment variable */
+	auto_confirm = env_get("fastboot.unlock_critical_confirm");
+	if (auto_confirm && !strcmp(auto_confirm, "yes")) {
+		strcpy(confirm, "yes");
+		printf("yes (auto-confirmed)\n");
+	} else {
+		/* Read user input */
+		if (!cli_readline_into_buffer("Confirm: ", confirm, 16)) {
+			free(confirm);
+			fastboot_fail("Critical unlock cancelled", response);
+			return;
+		}
+	}
+
+	if (strcmp(confirm, "yes") != 0) {
+		free(confirm);
+		printf("Critical unlock cancelled\n");
+		fastboot_fail("Critical unlock not confirmed", response);
+		return;
+	}
+	free(confirm);
+
+	if (IS_ENABLED(CONFIG_AVB_VERIFY)) {
+		AvbOps *avb_ops;
+		AvbIOResult result;
+
+		/* Use AVB infrastructure when available */
+		avb_ops = avb_ops_alloc(0);
+		if (avb_ops) {
+			result = write_is_device_critical_unlocked(avb_ops, true);
+			avb_ops_free(avb_ops);
+			if (result == AVB_IO_RESULT_OK) {
+				printf("CRITICAL WARNING: Device may be damaged\n");
+				fastboot_okay(NULL, response);
+			} else {
+				fastboot_fail("Failed to unlock critical", response);
+			}
+			return;
+		}
+		fastboot_fail("AVB not available", response);
+	} else {
+		/* Use environment variable when AVB not available */
+		env_set("critical_unlocked", "1");
+		env_save();
+		printf("CRITICAL WARNING: Device may be permanently damaged\n");
+		fastboot_okay(NULL, response);
+	}
+}
+
+/**
+ * flashing_get_unlock_ability() - Execute the flashing get_unlock_ability command
+ *
+ * @cmd_parameter: Pointer to command parameter
+ * @response: Pointer to fastboot response buffer
+ */
+static void flashing_get_unlock_ability(char *cmd_parameter, char *response)
+{
+	char *unlock_ability;
+
+	/* Check fastboot unlock ability from environment */
+	/* This property is set by Android HAL OemLock */
+	unlock_ability = env_get("fastboot.unlock_ability");
+	if (unlock_ability && !strcmp(unlock_ability, "1"))
+		fastboot_okay("1", response);
+	else
+		fastboot_okay("0", response);
+}
+
+#else /* !CONFIG_IS_ENABLED(FASTBOOT_LOCKING) */
+
+/* Stub implementations when locking is disabled */
+static bool __maybe_unused is_device_locked(void)
+{
+	return false;
+}
+
+static bool __maybe_unused is_critical_partition(const char *partition)
+{
+	return false;
+}
+
+static bool __maybe_unused is_device_critical_locked(void)
+{
+	return false;
+}
+
+static void __maybe_unused flashing_lock(char *cmd_parameter, char *response)
+{
+	fastboot_fail("Locking not supported", response);
+}
+
+static void __maybe_unused flashing_unlock(char *cmd_parameter, char *response)
+{
+	fastboot_fail("Unlocking not supported", response);
+}
+
+static void __maybe_unused flashing_lock_critical(char *cmd_parameter,
+						  char *response)
+{
+	fastboot_fail("Critical locking not supported", response);
+}
+
+static void __maybe_unused flashing_unlock_critical(char *cmd_parameter,
+						    char *response)
+{
+	fastboot_fail("Critical unlocking not supported", response);
+}
+
+static void __maybe_unused flashing_get_unlock_ability(char *cmd_parameter,
+						       char *response)
+{
+	fastboot_okay("0", response);
+}
+
+#endif /* CONFIG_IS_ENABLED(FASTBOOT_LOCKING) */

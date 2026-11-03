@@ -264,6 +264,27 @@ config FASTBOOT_OEM_BOARD
 	  command allows running vendor custom code defined in board/ files.
 	  Otherwise, it will do nothing and send fastboot fail.
 
+config FASTBOOT_LOCKING
+	bool "Enable fastboot locking/unlocking commands"
+	help
+	  This adds support for the Android fastboot locking commands:
+	  - flashing lock
+	  - flashing unlock
+	  - flashing lock_critical
+	  - flashing unlock_critical
+	  - flashing get_unlock_ability
+
+	  It also adds corresponding getvar support for unlocked, unlock_ability,
+	  and critical_unlocked variables. The implementation uses environment
+	  variables to store the lock states:
+	  - device_unlocked: "1" if unlocked, "0" if locked
+	  - critical_unlocked: "1" if critical partitions unlocked, "0" if locked
+	  - fastboot.unlock_ability: "1" if unlock allowed, "0" if not
+
+	  When enabled, flash and erase commands will check lock state before
+	  allowing operations on partitions. Critical partitions (bootloader,
+	  tiboot3, tispl, u-boot, etc.) have additional protection.
+
 endif # FASTBOOT
 
 endmenu
