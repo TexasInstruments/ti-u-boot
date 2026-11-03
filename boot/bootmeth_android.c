@@ -208,6 +208,16 @@ static int configure_bootloader_version(struct bootflow *bflow)
 					PLAIN_VERSION, false);
 }
 
+static int configure_dtbo_idx(struct bootflow *bflow)
+{
+	char *adtbo_idx = env_get("adtbo_idx");
+
+	if (!adtbo_idx)
+		return log_msg_ret("dtbo", -ENOENT);
+
+	return bootflow_cmdline_set_arg(bflow, "androidboot.dtbo_idx", adtbo_idx, false);
+}
+
 static int android_read_bootflow(struct udevice *dev, struct bootflow *bflow)
 {
 	struct blk_desc *desc = dev_get_uclass_plat(bflow->blk);
@@ -303,6 +313,7 @@ static int android_read_bootflow(struct udevice *dev, struct bootflow *bflow)
 	 */
 	configure_serialno(bflow);
 	configure_bootloader_version(bflow);
+	configure_dtbo_idx(bflow);
 
 	if (priv->boot_mode == ANDROID_BOOT_MODE_NORMAL && priv->slot) {
 		ret = bootflow_cmdline_set_arg(bflow, "androidboot.force_normal_boot",
