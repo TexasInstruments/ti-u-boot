@@ -186,36 +186,14 @@ int avb_store_root_of_trust_from_verification(AvbSlotVerifyData *slot_data,
 			printf("WARN: No VBMeta data available\n");
 		}
 
-		/* Calculate boot image hash from loaded partitions */
-		if (slot_data->loaded_partitions &&
-		    slot_data->num_loaded_partitions > 0) {
-			AvbPartitionData *boot_partition = NULL;
-			size_t i;
-
-			/* Find boot partition */
-			for (i = 0; i < slot_data->num_loaded_partitions;
-			     i++) {
-				if (strstr(slot_data->loaded_partitions[i].partition_name,
-					   "boot")) {
-					boot_partition =
-						&slot_data->loaded_partitions[i];
-					break;
-				}
-			}
-
-			if (boot_partition && boot_partition->data &&
-			    boot_partition->data_size > 0) {
-				sha256_csum_wd((unsigned char *)
-					       boot_partition->data,
-					       boot_partition->data_size,
-					       rot.verified_boot_hash,
-					       CHUNKSZ_SHA256);
-			} else {
-				printf("WARN: No boot partition data available for hash calculation\n");
-			}
-		} else {
-			printf("WARN: No loaded partitions available\n");
-		}
+		/*
+		 * Calculate vbmeta digest (hash of all vbmeta images combined)
+		 * This is what Android VTS expects in verified_boot_hash field
+		 * per the Android Verified Boot specification.
+		 */
+		avb_slot_verify_data_calculate_vbmeta_digest(slot_data,
+							     AVB_DIGEST_TYPE_SHA256,
+							     rot.verified_boot_hash);
 	} else {
 		printf("WARN: No VBMeta images available\n");
 	}
@@ -348,16 +326,11 @@ int avb_setup_root_of_trust(void)
 		printf("INFO: Device locked: %s (from AVB lib)\n",
 		       rot.device_locked ? "Yes" : "No");
 
-		/* Calculate boot image hash */
-		if (slot_data->loaded_partitions &&
-		    slot_data->loaded_partitions[0].data) {
-			sha256_csum_wd((unsigned char *)
-				       slot_data->loaded_partitions[0].data,
-				       slot_data->loaded_partitions[0].data_size,
-				       rot.verified_boot_hash,
-				       CHUNKSZ_SHA256);
-			printf("INFO: Calculated boot image hash\n");
-		}
+		/* Calculate vbmeta digest (hash of all vbmeta images) */
+		avb_slot_verify_data_calculate_vbmeta_digest(slot_data,
+							     AVB_DIGEST_TYPE_SHA256,
+							     rot.verified_boot_hash);
+		printf("INFO: Calculated vbmeta digest\n");
 
 		/* Record boot timestamp */
 		rot.timestamp = get_timer(0);
