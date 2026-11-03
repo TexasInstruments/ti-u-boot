@@ -356,7 +356,7 @@ static int read_slotted_partition(struct blk_desc *desc, const char *const name,
 	struct disk_partition partition;
 	char partname[PART_NAME_LEN];
 	size_t partname_len;
-	ulong num_blks = DIV_ROUND_UP(image_size, desc->blksz);
+	ulong num_blks;
 	int ret;
 	u32 n;
 
@@ -381,6 +381,10 @@ static int read_slotted_partition(struct blk_desc *desc, const char *const name,
 	ret = part_get_info_by_name(desc, partname, &partition);
 	if (ret < 0)
 		return log_msg_ret("part", ret);
+
+	/* image_size == 0 means read the whole partition (e.g. dtbo) */
+	num_blks = image_size ? DIV_ROUND_UP(image_size, desc->blksz) :
+				partition.size;
 
 	n = blk_dread(desc, partition.start, num_blks, map_sysmem(addr, 0));
 	if (n < num_blks)
@@ -550,6 +554,7 @@ static int boot_android_normal(struct bootflow *bflow)
 	int ret;
 	ulong loadaddr = env_get_hex("loadaddr", 0);
 	ulong vloadaddr = env_get_hex("vendor_boot_comp_addr_r", 0);
+	ulong fdtoverlay_addr_r = env_get_hex("fdtoverlay_addr_r", 0);
 
 	ret = run_avb_verification(bflow);
 	if (ret < 0)
@@ -574,12 +579,18 @@ static int boot_android_normal(struct bootflow *bflow)
 	}
 	set_abootimg_addr(loadaddr);
 
-	if (priv->slot)
-		free(priv->slot);
-
 	ret = append_bootargs_to_cmdline(bflow);
 	if (ret < 0)
 		return log_msg_ret("bootargs append", ret);
+
+	ret = read_slotted_partition(desc, "dtbo", priv->slot, 0, fdtoverlay_addr_r);
+	if (ret < 0)
+		return log_msg_ret("read dtbo", ret);
+
+	if (priv->slot) {
+		free(priv->slot);
+		priv->slot = NULL;
+	}
 
 	ret = bootm_boot_start(loadaddr, bflow->cmdline);
 
