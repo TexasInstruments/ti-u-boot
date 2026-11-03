@@ -485,6 +485,9 @@ int android_image_get_ramdisk(const void *hdr, const void *vendor_boot_img,
 {
 	struct andr_image_data img_data = {0};
 	ulong ramdisk_ptr;
+	size_t ret, len = 0;
+	size_t bootconfig_size = 0;
+	char *bootargs, *androidbootarg, *end;
 
 	if (!android_image_get_data(hdr, vendor_boot_img, &img_data))
 		return -EINVAL;
@@ -521,6 +524,32 @@ int android_image_get_ramdisk(const void *hdr, const void *vendor_boot_img,
 			memcpy((void *)
 			       (ramdisk_ptr), (void *)img_data.bootconfig_addr,
 			       img_data.bootconfig_size);
+
+			bootargs = env_get("bootargs");
+			bootconfig_size = img_data.bootconfig_size;
+
+			while (1) {
+				androidbootarg = strstr(bootargs, "androidboot.");
+				if (!androidbootarg)
+					break;
+				end = strchr(androidbootarg, ' ');
+				*end = '\0';
+				len = strlen(androidbootarg);
+				*end = '\n'; // bootConfig are new-line terminated
+				ret = add_bootconfig_parameters(androidbootarg, len + 1,
+								ramdisk_ptr, bootconfig_size);
+				if (!ret)
+					return -EINVAL;
+				bootconfig_size += ret;
+				img_data.ramdisk_size += ret;
+				/* Erase the androidboot.* bootarg from bootargs */
+				*end = ' ';
+				memmove(androidbootarg, androidbootarg + len,
+					strlen(androidbootarg + len) + 1);
+			}
+
+			/* Save back the new commandline without androidboot. */
+			env_set("bootargs", bootargs);
 		}
 	} else {
 		/* Ramdisk can be used in-place, use current ptr */
