@@ -57,6 +57,36 @@ static ulong add_trailer(ulong bootconfig_start_addr, ulong bootconfig_size)
 	return BOOTCONFIG_TRAILER_SIZE;
 }
 
+/*
+ * Add a string of boot config parameters to memory appended by the trailer.
+ */
+u32 add_bootconfig_parameters(char *params, ulong params_size,
+			      ulong bootconfig_start_addr, u32 bootconfig_size)
+{
+	if (!params || !bootconfig_start_addr)
+		return -1;
+
+	if (params_size == 0)
+		return 0;
+
+	u32 applied_bytes = 0;
+	u32 new_size = 0;
+	ulong end = bootconfig_start_addr + bootconfig_size;
+
+	if (is_trailer_present(end)) {
+		end -= BOOTCONFIG_TRAILER_SIZE;
+		applied_bytes -= BOOTCONFIG_TRAILER_SIZE;
+		memcpy(&new_size, (void *)end, BOOTCONFIG_SIZE_SIZE);
+	} else {
+		new_size = bootconfig_size;
+	}
+	memcpy((void *)end, params, params_size);
+	applied_bytes += params_size;
+	applied_bytes += add_trailer(bootconfig_start_addr,
+				     bootconfig_size + applied_bytes);
+	return applied_bytes;
+}
+
 __weak ulong get_avendor_bootimg_addr(void)
 {
 	return -1;
