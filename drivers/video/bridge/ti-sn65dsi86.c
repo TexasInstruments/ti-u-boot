@@ -733,10 +733,10 @@ static int ti_sn65dsi86_pre_enable(struct udevice *dev)
 /*
  * enable: Linux ti_sn_bridge_atomic_enable equivalent.
  *
- * At this point TIDSS VP is running (HSYNC is flowing into Cadence DSI).
- * VID_EN was already asserted in pre_enable so the CDN DSI VSG is armed
+ * At this point TIDSS VP is running (HSYNC is flowing into DSI host).
+ * VID_EN was already asserted in pre_enable so the DSI VSG is armed
  * and waiting for HSYNC.  We do link training, program video timings,
- * enable VSTREAM, then call dsi_host_start_video to confirm VSG_RUN.
+ * and enable VSTREAM.
  */
 static int ti_sn65dsi86_enable(struct udevice *dev)
 {
@@ -805,12 +805,6 @@ static int ti_sn65dsi86_enable(struct udevice *dev)
 	ti_sn_wr(dev, SN_BACKLIGHT_REG, 0xFF);
 	ti_sn_wr(dev, SN_BACKLIGHT_REG + 1, 0xFF);
 	ti_sn_wr(dev, SN_PWM_EN_INV_REG, SN_PWM_EN_MASK);
-
-	if (priv->dsi_host) {
-		ret = dsi_host_start_video(priv->dsi_host);
-		if (ret)
-			dev_warn(dev, "dsi_host_start_video: %d\n", ret);
-	}
 
 	return 0;
 }

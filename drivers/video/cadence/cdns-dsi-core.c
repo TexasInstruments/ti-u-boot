@@ -716,19 +716,6 @@ static int cdns_dsi_setup_video_mode(struct cdns_dsi *dsi,
 	return 0;
 }
 
-static int cdns_dsi_host_start_video(struct udevice *dev)
-{
-	struct cdns_dsi_host_priv *priv = dev_get_priv(dev);
-	struct cdns_dsi *dsi = &priv->dsi;
-
-	if (!(priv->device->mode_flags & MIPI_DSI_MODE_VIDEO))
-		return 0;
-
-	writel(0xFFFFFFFF, dsi->base + VID_MODE_STS_CLR);
-
-	return 0;
-}
-
 static int cdns_dsi_host_enable(struct udevice *dev)
 {
 	struct cdns_dsi_host_priv *priv = dev_get_priv(dev);
@@ -788,6 +775,9 @@ static int cdns_dsi_host_enable(struct udevice *dev)
 		tmp = readl(dsi->base + MCTL_MAIN_DATA_CTL);
 		tmp |= IF_VID_MODE | IF_VID_SELECT(dsi->input.id) | VID_EN;
 		writel(tmp, dsi->base + MCTL_MAIN_DATA_CTL);
+
+		/* Clear video mode status to start with a clean slate */
+		writel(0xFFFFFFFF, dsi->base + VID_MODE_STS_CLR);
 	}
 
 	tmp = readl(dsi->base + MCTL_MAIN_EN) | IF_EN(dsi->input.id);
@@ -800,7 +790,6 @@ static struct dsi_host_ops cdns_dsi_ops = {
 	.attach = cdns_dsi_host_attach,
 	.init = cdns_dsi_host_init,
 	.enable = cdns_dsi_host_enable,
-	.start_video = cdns_dsi_host_start_video,
 };
 
 static int cdns_dsi_of_to_plat(struct udevice *dev)
