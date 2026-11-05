@@ -1054,11 +1054,15 @@ static int tidss_drv_probe(struct udevice *dev)
 
 	ret = uclass_first_device_err(UCLASS_PANEL, &panel);
 	if (ret) {
-		if (ret != -ENODEV)
-			dev_warn(dev, "panel device error %d\n", ret);
+		dev_warn(dev, "panel not found %d, falling back to bridge\n",
+			 ret);
 		panel = NULL;
 	}
 
+	/*
+	 * Use panel for static timing or bridge for EDID-based timing.
+	 * Return error if neither is available.
+	 */
 	if (panel) {
 		ret = panel_get_display_timing(panel, &timings);
 		if (ret) {
