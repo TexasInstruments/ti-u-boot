@@ -614,6 +614,11 @@ int dss_vp_set_clk_rate(struct tidss_drv_priv *priv, u32 hw_videoport,
 		rate *= 7;
 
 	r = clk_set_rate(&priv->vp_clk[hw_videoport], rate);
+	if (r < 0) {
+		dev_err(priv->dev, "vp%d: Failed to set clock rate to %lu Hz: %d\n",
+			hw_videoport, rate, r);
+		return r;
+	}
 
 	new_rate = clk_get_rate(&priv->vp_clk[hw_videoport]);
 
