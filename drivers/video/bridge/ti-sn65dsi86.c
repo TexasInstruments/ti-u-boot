@@ -653,17 +653,17 @@ static int ti_sn65dsi86_get_display_timing(struct udevice *dev,
 
 	ret = ti_sn_read_edid(dev, edid, sizeof(edid));
 	if (ret) {
+		dev_warn(dev, "EDID read failed (%d), using default timing\n",
+			 ret);
 		memcpy(timing, &default_timing, sizeof(*timing));
-		timing->flags &= ~(DISPLAY_FLAGS_HSYNC_HIGH | DISPLAY_FLAGS_VSYNC_HIGH);
-		timing->flags |= DISPLAY_FLAGS_HSYNC_LOW | DISPLAY_FLAGS_VSYNC_LOW;
 		return 0;
 	}
 
 	ret = edid_get_timing(edid, sizeof(edid), timing, &bpc);
 	if (ret) {
+		dev_warn(dev, "EDID parsing failed (%d), using default timing\n",
+			 ret);
 		memcpy(timing, &default_timing, sizeof(*timing));
-		timing->flags &= ~(DISPLAY_FLAGS_HSYNC_HIGH | DISPLAY_FLAGS_VSYNC_HIGH);
-		timing->flags |= DISPLAY_FLAGS_HSYNC_LOW | DISPLAY_FLAGS_VSYNC_LOW;
 		return 0;
 	}
 
@@ -674,13 +674,6 @@ static int ti_sn65dsi86_get_display_timing(struct udevice *dev,
 	timing->pixelclock.typ /= 1000;
 	timing->pixelclock.min /= 1000;
 	timing->pixelclock.max /= 1000;
-
-	/*
-	 * CDN DSI DPI receiver only detects active-LOW HSYNC/VSYNC.
-	 * Force polarity so TIDSS VP outputs the signals CDN DSI expects.
-	 */
-	timing->flags &= ~(DISPLAY_FLAGS_HSYNC_HIGH | DISPLAY_FLAGS_VSYNC_HIGH);
-	timing->flags |= DISPLAY_FLAGS_HSYNC_LOW | DISPLAY_FLAGS_VSYNC_LOW;
 
 	priv->timing = *timing;
 	return 0;
