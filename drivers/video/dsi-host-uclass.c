@@ -44,16 +44,6 @@ int dsi_host_enable(struct udevice *dev)
 	return ops->enable(dev);
 }
 
-int dsi_host_start_video(struct udevice *dev)
-{
-	struct dsi_host_ops *ops = dsi_host_get_ops(dev);
-
-	if (!ops->start_video)
-		return -EOPNOTSUPP;
-
-	return ops->start_video(dev);
-}
-
 UCLASS_DRIVER(dsi_host) = {
 	.id		= UCLASS_DSI_HOST,
 	.name		= "dsi_host",

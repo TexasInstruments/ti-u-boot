@@ -54,17 +54,6 @@ struct dsi_host_ops {
 	 * @return 0 if OK, -ve on error
 	 */
 	int (*disable)(struct udevice *dev);
-
-	/**
-	 * start_video() - Enable the DSI video stream generator
-	 *
-	 * Called after upstream display controller starts streaming pixel
-	 * data.
-	 *
-	 * @dev: dsi host device
-	 * @return 0 if OK, -ve on error
-	 */
-	int (*start_video)(struct udevice *dev);
 };
 
 #define dsi_host_get_ops(dev)	((struct dsi_host_ops *)(dev)->driver->ops)
@@ -101,13 +90,5 @@ int dsi_host_init(struct udevice *dev,
  * Return: 0 if OK, -ve on error
  */
 int dsi_host_enable(struct udevice *dev);
-
-/**
- * dsi_host_start_video
- *
- * @dev:	dsi host device
- * Return: 0 if OK, -ve on error
- */
-int dsi_host_start_video(struct udevice *dev);
 
 #endif
