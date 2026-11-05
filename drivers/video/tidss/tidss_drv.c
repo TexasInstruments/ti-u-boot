@@ -1150,16 +1150,6 @@ static int tidss_drv_probe(struct udevice *dev)
 
 	/* video port address clocks and enable */
 	for (i = 0; i < priv->feat->num_vps; i++) {
-		int idx_ovr, idx_vp;
-
-		idx_ovr = fdt_stringlist_search(gd->fdt_blob,
-						dev_of_offset(dev),
-						"reg-names",
-						priv->feat->ovr_name[i]);
-		idx_vp  = fdt_stringlist_search(gd->fdt_blob,
-						dev_of_offset(dev),
-						"reg-names",
-						priv->feat->vp_name[i]);
 		priv->base_ovr[i] = dev_remap_addr_name(dev, priv->feat->ovr_name[i]);
 		priv->base_vp[i]  = dev_remap_addr_name(dev, priv->feat->vp_name[i]);
 		if (!priv->base_ovr[i] || !priv->base_vp[i]) {
