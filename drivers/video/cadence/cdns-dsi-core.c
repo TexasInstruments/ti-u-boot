@@ -590,8 +590,8 @@ static int cdns_dsi_host_init(struct udevice *dev,
 	return ret;
 }
 
-static void cdns_dsi_setup_video_mode(struct cdns_dsi *dsi,
-				      struct display_timing *timings)
+static int cdns_dsi_setup_video_mode(struct cdns_dsi *dsi,
+				     struct display_timing *timings)
 {
 	struct cdns_dsi_output *output = &dsi->output;
 	struct cdns_dsi_cfg *dsi_cfg = &dsi->dsi_cfg;
@@ -600,12 +600,17 @@ static void cdns_dsi_setup_video_mode(struct cdns_dsi *dsi,
 	unsigned int nlanes = output->dev->lanes;
 	u32 tmp, reg_wakeup, div, status;
 	unsigned int vfp, vbp, vsa, vact;
+	int ret;
 
 	tmp = CLK_LANE_RDY;
 	for (div = 0; div < nlanes; div++)
 		tmp |= DATA_LANE_RDY(div);
-	if (readl_poll_timeout(dsi->base + MCTL_MAIN_STS, status,
-			       (tmp == (status & tmp)), 500000)) {
+	ret = readl_poll_timeout(dsi->base + MCTL_MAIN_STS, status,
+				 (tmp == (status & tmp)), 500000);
+	if (ret) {
+		pr_err("%s: Timeout waiting for DSI lanes ready\n", __func__);
+		pr_err("  status=0x%08x, expected=0x%08x\n", status, tmp);
+		return -ETIMEDOUT;
 	}
 
 	writel(HBP_LEN(dsi_cfg->hbp) | HSA_LEN(dsi_cfg->hsa),
@@ -688,7 +693,7 @@ static void cdns_dsi_setup_video_mode(struct cdns_dsi *dsi,
 			break;
 		default:
 			pr_err("%s: unsupported DSI format\n", __func__);
-			return;
+			return -EINVAL;
 		}
 
 		if (output->dev->mode_flags & MIPI_DSI_MODE_VIDEO_SYNC_PULSE)
@@ -707,6 +712,8 @@ static void cdns_dsi_setup_video_mode(struct cdns_dsi *dsi,
 	if (!(output->dev->mode_flags & MIPI_DSI_MODE_EOT_PACKET))
 		tmp |= HOST_EOT_GEN;
 	writel(tmp, dsi->base + MCTL_MAIN_DATA_CTL);
+
+	return 0;
 }
 
 static int cdns_dsi_host_start_video(struct udevice *dev)
@@ -770,7 +777,9 @@ static int cdns_dsi_host_enable(struct udevice *dev)
 	       DPHY_D_RSTB(dsi->output.dev->lanes) | DPHY_C_RSTB,
 	       dsi->base + MCTL_DPHY_CFG0);
 
-	cdns_dsi_setup_video_mode(dsi, priv->timings);
+	ret = cdns_dsi_setup_video_mode(dsi, priv->timings);
+	if (ret)
+		return ret;
 
 	if (dsi->platform_ops && dsi->platform_ops->enable)
 		dsi->platform_ops->enable(dsi);
