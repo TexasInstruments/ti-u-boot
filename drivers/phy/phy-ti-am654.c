@@ -142,8 +142,8 @@ static int mux_table[SERDES_NUM_CLOCKS][3] = {
 static int serdes_am654_mux_clk_set_parent(struct clk *clk, struct clk *parent)
 {
 	struct serdes_am654_mux_clk_data *data = dev_get_priv(clk->dev);
-	u32 val;
-	int i;
+	u32 val, mask = 0;
+	int i, j;
 
 	debug("%s(clk=%s, parent=%s)\n", __func__, clk->dev->name,
 	      parent->dev->name);
@@ -169,10 +169,16 @@ static int serdes_am654_mux_clk_set_parent(struct clk *clk, struct clk *parent)
 	if (i >= data->parents.count)
 		return -EINVAL;
 
+	for (j = 0; j < SERDES_NUM_CLOCKS; j++) {
+		if (mux_table[clk->id][j] != -1)
+			mask |= mux_table[clk->id][j];
+	}
+
+	mask <<= SERDES_CTL_CLK_SEL_SHIFT;
 	val = mux_table[clk->id][i];
 	val <<= SERDES_CTL_CLK_SEL_SHIFT;
 
-	regmap_update_bits(data->regmap, 0, SERDES_CTL_CLK_SEL_MASK, val);
+	regmap_update_bits(data->regmap, 0, mask, val);
 
 	return 0;
 }
