@@ -61,6 +61,7 @@ struct pcie_dw_ti {
 	/* Must be first member of the struct */
 	struct pcie_dw dw;
 	void *app_base;
+	struct gpio_desc rst_gpio;
 	u32 num_lanes;
 };
 
@@ -255,6 +256,17 @@ static int pcie_dw_ti_probe(struct udevice *dev)
 		return ret;
 	}
 
+	ret = gpio_request_by_name(dev, "reset-gpios", 0, &pci->rst_gpio,
+				   GPIOD_IS_OUT);
+	if (ret && ret != -ENOENT) {
+		dev_err(dev, "failed to get reset-gpios\n");
+		return ret;
+	}
+
+	/* Keep the reset-line asserted until the PCI Controller is ready */
+	if (dm_gpio_is_valid(&pci->rst_gpio))
+		dm_gpio_set_value(&pci->rst_gpio, 0);
+
 	ret = generic_phy_get_by_name(dev,  "pcie-phy0", &phy0);
 	if (ret) {
 		dev_err(dev, "Unable to get phy0");
@@ -283,6 +295,15 @@ static int pcie_dw_ti_probe(struct udevice *dev)
 		pcie_am654_set_mode(pci, DW_PCIE_RC_TYPE);
 
 	dw_pcie_link_set_max_link_width(&pci->dw, pci->num_lanes);
+
+	/*
+	 * The reset-gpio (PERST#) should be held deasserted for at-least 100 ms
+	 * before the link is brought up.
+	 */
+	if (dm_gpio_is_valid(&pci->rst_gpio)) {
+		dm_gpio_set_value(&pci->rst_gpio, 1);
+		mdelay(100);
+	}
 
 	if (!pcie_dw_ti_pcie_link_up(pci, LINK_SPEED_GEN_2)) {
 		printf("PCIE-%d: Link down\n", dev_seq(dev));
