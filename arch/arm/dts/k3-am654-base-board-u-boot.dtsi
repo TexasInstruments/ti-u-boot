@@ -146,7 +146,9 @@
 };
 
 &wkup_i2c0 {
-	bootph-all;
+	gpio@38 {
+		bootph-all;
+	};
 };
 
 &vdd_mpu {
