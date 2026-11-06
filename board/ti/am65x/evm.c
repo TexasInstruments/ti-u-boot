@@ -126,6 +126,14 @@ static int init_daughtercard_det_gpio(char *gpio_name, struct gpio_desc *desc)
 	return dm_gpio_set_dir_flags(desc, GPIOD_IS_IN);
 }
 
+#ifdef CONFIG_XPL_BUILD
+/*
+ * Populated by probe_daughtercards() in SPL and used by
+ * board_spl_fit_append_fdt_skip().
+ */
+static char spl_detected_overlays[1024];
+#endif
+
 static int probe_daughtercards(void)
 {
 	struct ti_am6_eeprom ep;
@@ -133,8 +141,7 @@ static int probe_daughtercards(void)
 	char mac_addr[DAUGHTER_CARD_NO_OF_MAC_ADDR][TI_EEPROM_HDR_ETH_ALEN];
 	u8 mac_addr_cnt;
 	char name_overlays[1024] = { 0 };
-	int i, j;
-	int ret;
+	int ret, i;
 
 	/*
 	 * Daughter card presence detection signal name to GPIO (via I2C I/O
@@ -242,9 +249,10 @@ static int probe_daughtercards(void)
 		 * Populate any MAC addresses from daughtercard into the U-Boot
 		 * environment, starting with a card-specific offset so we can
 		 * have multiple cards contribute to the MAC pool in a well-
-		 * defined manner.
+		 * defined manner. Not applicable to SPL.
 		 */
-		for (j = 0; j < mac_addr_cnt; j++) {
+#ifndef CONFIG_XPL_BUILD
+		for (int j = 0; j < mac_addr_cnt; j++) {
 			if (!is_valid_ethaddr((u8 *)mac_addr[j]))
 				continue;
 
@@ -252,6 +260,7 @@ static int probe_daughtercards(void)
 						      cards[i].eth_offset + j,
 						      (uchar *)mac_addr[j]);
 		}
+#endif
 
 		/*
 		 * It has been observed that setting SERDES0 lane mux to USB prevents USB
@@ -283,13 +292,66 @@ static int probe_daughtercards(void)
 		strcat(name_overlays, " ");
 	}
 
-	/* Apply device tree overlay(s) to the U-Boot environment, if any */
-	if (strlen(name_overlays))
-		return env_set("name_overlays", name_overlays);
+	if (!strlen(name_overlays))
+		return 0;
 
+#ifdef CONFIG_XPL_BUILD
+	/* Store for board_spl_fit_append_fdt_skip() */
+	strlcpy(spl_detected_overlays, name_overlays,
+		sizeof(spl_detected_overlays));
+	return 0;
+#else
+	/* Apply device tree overlay(s) to the U-Boot environment, if any */
+	return env_set("name_overlays", name_overlays);
+#endif
+}
+
+#ifdef CONFIG_XPL_BUILD
+void spl_board_init(void)
+{
+	/*
+	 * Detect daughtercards to allow board_spl_fit_append_fdt_skip()
+	 * to apply the overlays to U-Boot FIT image itself, allowing
+	 * U-Boot proper to enable and use the peripherals on the
+	 * daughtercards.
+	 */
+	probe_daughtercards();
+}
+
+/*
+ * Mapping between FDTs in binman.dtsi and their corresponding Device-Tree
+ * overlays. Depending on the daughtercards detected, we conditionally
+ * apply the device-tree overlay's fdt if it is packaged.
+ */
+static const struct {
+	const char *fit_node;
+	const char *dtbo_name;
+} spl_fit_overlay_map[] = {
+	{ "fdt-am654-pcie-usb2", "k3-am654-pcie-usb2.dtbo" },
+	{ "fdt-am654-pcie-usb3", "k3-am654-pcie-usb3.dtbo" },
+};
+
+int board_spl_fit_append_fdt_skip(const char *name)
+{
+	int i;
+
+	/*
+	 * For the overlays to be 'conditionally' applied, return 0 to apply them
+	 * if the daughtercard corresponding to them was detected and return 1
+	 * otherwise to skip applying the overlay.
+	 */
+	for (i = 0; i < ARRAY_SIZE(spl_fit_overlay_map); i++) {
+		if (!strcmp(name, spl_fit_overlay_map[i].fit_node))
+			return strstr(spl_detected_overlays,
+				      spl_fit_overlay_map[i].dtbo_name) ? 0 : 1;
+	}
+
+	/* Any overlay not in the list of 'conditional' overlays is always applied */
 	return 0;
 }
-#endif
+#endif /* CONFIG_XPL_BUILD */
+
+#endif /* CONFIG_TI_I2C_BOARD_DETECT */
 
 int board_late_init(void)
 {
