@@ -61,6 +61,7 @@ struct pcie_dw_ti {
 	/* Must be first member of the struct */
 	struct pcie_dw dw;
 	void *app_base;
+	u32 num_lanes;
 };
 
 enum dw_pcie_device_mode {
@@ -281,6 +282,8 @@ static int pcie_dw_ti_probe(struct udevice *dev)
 	if (device_is_compatible(dev, "ti,am654-pcie-rc"))
 		pcie_am654_set_mode(pci, DW_PCIE_RC_TYPE);
 
+	dw_pcie_link_set_max_link_width(&pci->dw, pci->num_lanes);
+
 	if (!pcie_dw_ti_pcie_link_up(pci, LINK_SPEED_GEN_2)) {
 		printf("PCIE-%d: Link down\n", dev_seq(dev));
 		return -ENODEV;
@@ -334,6 +337,9 @@ static int pcie_dw_ti_of_to_plat(struct udevice *dev)
 	pcie->app_base = (void *)dev_read_addr_name(dev, "app");
 	if ((fdt_addr_t)pcie->app_base == FDT_ADDR_T_NONE)
 		return -EINVAL;
+
+	/* Get the link-width (number of lanes) */
+	pcie->num_lanes = dev_read_u32_default(dev, "num-lanes", 1);
 
 	return 0;
 }
