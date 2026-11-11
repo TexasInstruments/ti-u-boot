@@ -1247,6 +1247,12 @@ static int tidss_drv_probe(struct udevice *dev)
 
 		dss_vp_go(priv, priv->active_hw_vps[i]);
 
+		if (priv->bridge_dev) {
+			ret = video_bridge_post_enable(priv->bridge_dev);
+			if (ret)
+				dev_warn(dev, "vp%u: bridge post_enable failed: %d\n",
+					 priv->active_hw_vps[i], ret);
+		}
 	}
 
 	video_set_flush_dcache(dev, true);

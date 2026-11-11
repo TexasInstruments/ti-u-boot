@@ -140,6 +140,15 @@ static const u32 ti_sn_dsiclk_lut[] = {
 	460800000,
 };
 
+/* Repeated link training attempts for robust link training */
+#define MODESET_MAX_ATTEMPTS		4
+#define DPCD_STABILITY_CHECKS		3
+#define DPCD_STABILITY_INTERVAL_MS	100
+/* Time for the DP link and PLL to settle after a soft reset, before retraining */
+#define SN_RETRAIN_SETTLE_MS		100
+/* Time for the stream to establish after VSTREAM is enabled, before checking */
+#define SN_STREAM_SETTLE_MS		200
+
 /* LUT index = register value; value = DP data rate in Mbps */
 static const unsigned int ti_sn_dp_rate_lut[] = {
 	0, 1620, 2160, 2430, 2700, 3240, 4320, 5400
@@ -669,7 +678,8 @@ static int ti_sn65dsi86_get_display_timing(struct udevice *dev,
 
 	/*
 	 * edid_get_timing() returns pixelclock in Hz; U-Boot display_timing
-	 * convention expects kHz (tidss does pclk * 1000 for clk_set_rate).
+	 * convention expects kHz (the display controller driver multiplies by
+	 * 1000 for clk_set_rate).
 	 */
 	timing->pixelclock.typ /= 1000;
 	timing->pixelclock.min /= 1000;
@@ -682,10 +692,10 @@ static int ti_sn65dsi86_get_display_timing(struct udevice *dev,
 /*
  * pre_enable: Linux ti_sn_bridge_atomic_pre_enable equivalent.
  *
- * Brings up power, configures comms, then initialises the DSI host
- * (which starts the DPHY / HS clock) WITHOUT asserting VID_EN.
- * VID_EN is asserted only in enable(), after TIDSS VP is running and
- * link training is complete, so ERR_MISSING_HSYNC cannot latch.
+ * Brings up power, configures comms, then initialises and enables the DSI
+ * host (which starts the DPHY / HS clock).  The host is armed here, before
+ * the display controller's video port starts, so a missing-HSYNC error
+ * cannot latch.
  */
 static int ti_sn65dsi86_pre_enable(struct udevice *dev)
 {
@@ -704,13 +714,13 @@ static int ti_sn65dsi86_pre_enable(struct udevice *dev)
 	ti_sn_enable_comms(dev);
 
 	/*
-	 * Initialise and enable the DSI host (sets VID_EN) BEFORE TIDSS VP
-	 * starts.  The CDN DSI VSG must be armed here so it waits cleanly for
-	 * the first VSYNC from the VP.  If VID_EN is asserted after the VP is
-	 * already running the VSG sees a mid-frame DPI stream and immediately
-	 * latches ERR_MISSING_HSYNC (VID_MODE_STS bit 2 / 0x4).
-	 * This mirrors Linux cdns_dsi_bridge_atomic_pre_enable() which sets
-	 * VID_EN in the pre_enable hook before the CRTC enable.
+	 * Initialise and enable the DSI host BEFORE the display controller's
+	 * video port starts.  The host's video stream generator must be armed
+	 * here so it waits cleanly for the first VSYNC.  If it is armed after
+	 * the video port is already running, it sees a mid-frame DPI stream
+	 * and latches a missing-HSYNC error.  This mirrors Linux, where the
+	 * DSI host is enabled in the bridge pre_enable hook before the CRTC
+	 * enable.
 	 */
 	if (priv->dsi_host) {
 		ret = dsi_host_init(priv->dsi_host, &priv->dsi_device,
@@ -731,21 +741,78 @@ static int ti_sn65dsi86_pre_enable(struct udevice *dev)
 }
 
 /*
- * enable: Linux ti_sn_bridge_atomic_enable equivalent.
+ * ti_sn_train_and_stream - run DP link training at the minimum viable rate,
+ * program DSI rate and video timings, then enable VSTREAM.
  *
- * At this point TIDSS VP is running (HSYNC is flowing into DSI host).
- * VID_EN was already asserted in pre_enable so the DSI VSG is armed
- * and waiting for HSYNC.  We do link training, program video timings,
- * and enable VSTREAM.
+ * @soft_reset: take VSTREAM, the DP link and the PLL down first so the
+ *              training starts from a clean state (used on retries).
+ *
+ * Returns 0 on success, negative errno if link training failed.
  */
-static int ti_sn65dsi86_enable(struct udevice *dev)
+static int ti_sn_train_and_stream(struct udevice *dev, int attempt,
+				  bool soft_reset)
 {
 	struct ti_sn65dsi86_priv *priv = dev_get_priv(dev);
 	const char *last_err_str = "No supported DP rate";
 	unsigned int valid_rates;
-	u8 dpcd_val, val;
-	int dp_rate_idx, max_dp_lanes;
+	int dp_rate_idx;
 	int ret = -EINVAL;
+
+	if (soft_reset) {
+		ti_sn_rmw(dev, SN_ENH_FRAME_REG, VSTREAM_ENABLE, 0);
+		ti_sn_wr(dev, SN_ML_TX_MODE_REG, 0);
+		ti_sn_wr(dev, SN_PLL_ENABLE_REG, 0);
+		mdelay(SN_RETRAIN_SETTLE_MS);
+	}
+
+	valid_rates = ti_sn_read_valid_rates(dev);
+
+	for (dp_rate_idx = ti_sn_calc_min_dp_rate_idx(&priv->timing,
+						      priv->dp_lanes);
+	     dp_rate_idx < (int)ARRAY_SIZE(ti_sn_dp_rate_lut);
+	     dp_rate_idx++) {
+		if (!(valid_rates & BIT(dp_rate_idx)))
+			continue;
+		ret = ti_sn_link_training(dev, dp_rate_idx, &last_err_str);
+		if (!ret)
+			break;
+	}
+	if (ret) {
+		dev_warn(dev, "Link training failed on attempt %d: %s\n",
+			 attempt, last_err_str);
+		return ret;
+	}
+	dev_dbg(dev, "Link training succeeded on attempt %d (DP rate idx %d, %d lanes)\n",
+		attempt, dp_rate_idx, priv->dp_lanes);
+
+	/*
+	 * Set DSI rate after link training so the DSI clock has been running
+	 * for the full training window before the bridge is told the expected
+	 * frequency, giving the DPHY more time to settle.
+	 */
+	ti_sn_set_dsi_rate(dev, &priv->timing);
+	ti_sn_set_video_timings(dev, &priv->timing);
+
+	ti_sn_rmw(dev, SN_ENH_FRAME_REG, VSTREAM_ENABLE, VSTREAM_ENABLE);
+
+	return 0;
+}
+
+/*
+ * enable: Linux ti_sn_bridge_atomic_enable equivalent.
+ *
+ * Called after the display controller's video port is prepared but before
+ * it is started, so the sink cannot be in sync yet.  We do link training,
+ * program video timings and enable VSTREAM.  The sink sync check, the
+ * retrain on failure and the backlight happen in post_enable, once video is
+ * flowing.
+ */
+static int ti_sn65dsi86_enable(struct udevice *dev)
+{
+	struct ti_sn65dsi86_priv *priv = dev_get_priv(dev);
+	u8 dpcd_val, val;
+	int max_dp_lanes;
+	int ret;
 
 	if (ti_sn_dpcd_read(dev, DP_MAX_LANE_COUNT, &dpcd_val) == 0)
 		max_dp_lanes = dpcd_val & DP_MAX_LANE_COUNT_MASK;
@@ -759,8 +826,6 @@ static int ti_sn65dsi86_enable(struct udevice *dev)
 	ti_sn_wr(dev, SN_LN_ASSIGN_REG, priv->ln_assign);
 	ti_sn_rmw(dev, SN_ENH_FRAME_REG, LN_POLRS_MASK,
 		  priv->ln_polrs << LN_POLRS_OFFSET);
-
-	ti_sn_set_dsi_rate(dev, &priv->timing);
 
 	if (priv->is_edp) {
 		ti_sn_dpcd_write(dev, DP_EDP_CONFIGURATION_SET,
@@ -776,26 +841,20 @@ static int ti_sn65dsi86_enable(struct udevice *dev)
 	ti_sn_rmw(dev, SN_SSC_CONFIG_REG, DP_NUM_LANES_MASK,
 		  DP_NUM_LANES(min(priv->dp_lanes, 3)));
 
-	valid_rates = ti_sn_read_valid_rates(dev);
+	/*
+	 * A training failure here is not fatal: post_enable() retrains if the
+	 * sink does not report in-sync.
+	 */
+	ret = ti_sn_train_and_stream(dev, 1, false);
+	if (ret)
+		dev_warn(dev, "Initial link training failed: %d\n", ret);
 
-	for (dp_rate_idx = ti_sn_calc_min_dp_rate_idx(&priv->timing, priv->dp_lanes);
-	     dp_rate_idx < (int)ARRAY_SIZE(ti_sn_dp_rate_lut);
-	     dp_rate_idx++) {
-		if (!(valid_rates & BIT(dp_rate_idx)))
-			continue;
-		ret = ti_sn_link_training(dev, dp_rate_idx, &last_err_str);
-		if (!ret)
-			break;
-	}
-	if (ret) {
-		dev_err(dev, "Link training failed: %s (%d)\n", last_err_str, ret);
-		return ret;
-	}
+	return 0;
+}
 
-	ti_sn_set_video_timings(dev, &priv->timing);
-
-	ti_sn_rmw(dev, SN_ENH_FRAME_REG, VSTREAM_ENABLE, VSTREAM_ENABLE);
-
+/* Turn on the backlight PWM. */
+static void ti_sn_enable_backlight(struct udevice *dev)
+{
 	ti_sn_rmw(dev, SN_GPIO_CTRL_REG,
 		  SN_GPIO_MUX_MASK << (2 * SN_PWM_GPIO_IDX),
 		  SN_GPIO_MUX_SPECIAL << (2 * SN_PWM_GPIO_IDX));
@@ -805,14 +864,82 @@ static int ti_sn65dsi86_enable(struct udevice *dev)
 	ti_sn_wr(dev, SN_BACKLIGHT_REG, 0xFF);
 	ti_sn_wr(dev, SN_BACKLIGHT_REG + 1, 0xFF);
 	ti_sn_wr(dev, SN_PWM_EN_INV_REG, SN_PWM_EN_MASK);
+}
+
+/*
+ * ti_sn_check_sink_sync - read DPCD 0x205 DPCD_STABILITY_CHECKS times, spaced
+ *                         DPCD_STABILITY_INTERVAL_MS apart.
+ *
+ * Returns 0 if the sink reported in-sync on every read, -EIO otherwise.
+ */
+static int ti_sn_check_sink_sync(struct udevice *dev, int attempt)
+{
+	int chk, ret;
+	u8 sink_st;
+
+	for (chk = 1; chk <= DPCD_STABILITY_CHECKS; chk++) {
+		if (chk > 1)
+			mdelay(DPCD_STABILITY_INTERVAL_MS);
+
+		sink_st = 0;
+		ret = ti_sn_dpcd_read(dev, DP_SINK_STATUS, &sink_st);
+		if (ret) {
+			dev_warn(dev, "Attempt %d check %d: DPCD 0x205 read failed: %d\n",
+				 attempt, chk, ret);
+			return -EIO;
+		}
+		if (!(sink_st & DP_SINK_STATUS_PORT0_IN_SYNC)) {
+			dev_warn(dev, "Attempt %d check %d: sink not in sync (DPCD 0x205 = 0x%02x)\n",
+				 attempt, chk, sink_st);
+			return -EIO;
+		}
+	}
 
 	return 0;
+}
+
+/*
+ * post_enable: called once the display controller is scanning out, so the
+ * DSI stream is live.  Verify the sink accepted the pixel clock by reading
+ * DPCD 0x205 repeatedly; if it did not report in-sync, soft reset and
+ * retrain.  The backlight is turned on in every case so the panel is lit
+ * even if the sink never reports in-sync.
+ */
+static int ti_sn65dsi86_post_enable(struct udevice *dev)
+{
+	int attempt, ret = -EIO;
+
+	mdelay(SN_STREAM_SETTLE_MS);
+
+	for (attempt = 1; attempt <= MODESET_MAX_ATTEMPTS; attempt++) {
+		ret = ti_sn_check_sink_sync(dev, attempt);
+		if (!ret) {
+			dev_info(dev, "Sink in sync on attempt %d\n", attempt);
+			break;
+		}
+
+		if (attempt == MODESET_MAX_ATTEMPTS) {
+			dev_err(dev, "Sink did not report in-sync after %d link-train+VSTREAM attempts\n",
+				MODESET_MAX_ATTEMPTS);
+			break;
+		}
+
+		ret = ti_sn_train_and_stream(dev, attempt + 1, true);
+		if (ret)
+			break;
+		mdelay(SN_STREAM_SETTLE_MS);
+	}
+
+	ti_sn_enable_backlight(dev);
+
+	return ret;
 }
 
 static const struct video_bridge_ops ti_sn65dsi86_ops = {
 	.attach             = ti_sn65dsi86_attach,
 	.pre_enable         = ti_sn65dsi86_pre_enable,
 	.enable             = ti_sn65dsi86_enable,
+	.post_enable        = ti_sn65dsi86_post_enable,
 	.get_display_timing = ti_sn65dsi86_get_display_timing,
 };
 
