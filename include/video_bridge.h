@@ -54,6 +54,17 @@ struct video_bridge_ops {
 	int (*enable)(struct udevice *dev);
 
 	/**
+	 * post_enable() - finish enabling a video bridge once video is flowing
+	 *
+	 * Called after the display controller is scanning out, so checks that
+	 * need a live video stream can be done here.
+	 * This is optional op.
+	 *
+	 * @return 0 if OK, -ve on error
+	 */
+	int (*post_enable)(struct udevice *dev);
+
+	/**
 	 * check_attached() - check if a bridge is correctly attached
 	 *
 	 * This method is optional - if not provided then the hotplug GPIO
@@ -123,6 +134,13 @@ int video_bridge_pre_enable(struct udevice *dev);
 int video_bridge_enable(struct udevice *dev);
 
 /**
+ * video_bridge_post_enable() - finish enabling a video bridge once video flows
+ *
+ * Return: 0 if OK (or the bridge has no post_enable op), -ve on error
+ */
+int video_bridge_post_enable(struct udevice *dev);
+
+/**
  * video_bridge_set_backlight() - Set the backlight brightness
  *
  * @percent:	brightness percentage (0=off, 100=full brightness)
@@ -175,6 +193,11 @@ static inline int video_bridge_pre_enable(struct udevice *dev)
 }
 
 static inline int video_bridge_enable(struct udevice *dev)
+{
+	return -ENOSYS;
+}
+
+static inline int video_bridge_post_enable(struct udevice *dev)
 {
 	return -ENOSYS;
 }
