@@ -159,8 +159,6 @@ config CORTINA_SFLASH
 
 config CADENCE_QSPI
 	bool "Cadence QSPI driver"
-	select DM_THERMAL
-	select SPL_THERMAL
 	help
 	  Enable the Cadence Quad-SPI (QSPI) driver. This driver can be
 	  used to access the SPI NOR flash on platforms embedding this

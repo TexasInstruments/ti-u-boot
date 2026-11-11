@@ -7,14 +7,15 @@
 #include <clk.h>
 #include <log.h>
 #include <dm.h>
+#include <dma.h>
 #include <fdtdec.h>
+#include <limits.h>
 #include <malloc.h>
 #include <reset.h>
 #include <spi.h>
 #include <spi-mem.h>
 #include <dm/device_compat.h>
 #include <linux/err.h>
-#include <thermal.h>
 #include <linux/errno.h>
 #include <linux/io.h>
 #include <linux/sizes.h>
@@ -51,25 +52,6 @@ __weak int cadence_qspi_flash_reset(struct udevice *dev)
 __weak ofnode cadence_qspi_get_subnode(struct udevice *dev)
 {
 	return dev_read_first_subnode(dev);
-}
-
-static int cadence_spi_get_temp(int *temp)
-{
-	struct udevice *dev;
-	int ret;
-
-	ret = uclass_first_device_err(UCLASS_THERMAL, &dev);
-	if (ret)
-		return ret;
-
-	ret = thermal_get_temp(dev, temp);
-	if (ret)
-		return ret;
-
-	/* The temperature we get is in millicelsius. Change it to Celsius. */
-	*temp /= 1000;
-
-	return 0;
 }
 
 static int cadence_spi_phy_apply_setting(struct cadence_spi_priv *priv,
@@ -119,31 +101,6 @@ out:
 	return ret;
 }
 
-static int cadence_spi_find_rx_low(struct cadence_spi_priv *priv,
-				   struct spi_slave *spi,
-				   struct phy_setting *phy)
-{
-	int ret;
-
-	do {
-		phy->rx = CQSPI_PHY_RX_LOW_SEARCH_START;
-		do {
-			ret = cadence_spi_phy_apply_setting(priv, phy);
-			if (!ret) {
-				ret = cadence_spi_phy_check_pattern(priv, spi);
-				if (!ret)
-					return 0;
-			}
-			phy->rx += CQSPI_PHY_DDR_SEARCH_STEP;
-		} while (phy->rx <= CQSPI_PHY_RX_LOW_SEARCH_END);
-
-		phy->read_delay++;
-	} while (phy->read_delay <= CQSPI_PHY_MAX_RD);
-
-	debug("Unable to find RX low\n");
-	return -ENOENT;
-}
-
 static int cadence_spi_find_rx_low_sdr(struct cadence_spi_priv *priv,
 				       struct spi_slave *spi,
 				       struct phy_setting *phy)
@@ -162,31 +119,6 @@ static int cadence_spi_find_rx_low_sdr(struct cadence_spi_priv *priv,
 	} while (phy->rx < CQSPI_PHY_MAX_DELAY - 1);
 
 	debug("Unable to find RX low\n");
-	return -ENOENT;
-}
-
-static int cadence_spi_find_rx_high(struct cadence_spi_priv *priv,
-				    struct spi_slave *spi,
-				    struct phy_setting *phy)
-{
-	int ret;
-
-	do {
-		phy->rx = CQSPI_PHY_RX_HIGH_SEARCH_END;
-		do {
-			ret = cadence_spi_phy_apply_setting(priv, phy);
-			if (!ret) {
-				ret = cadence_spi_phy_check_pattern(priv, spi);
-				if (!ret)
-					return 0;
-			}
-			phy->rx -= CQSPI_PHY_DDR_SEARCH_STEP;
-		} while (phy->rx >= CQSPI_PHY_RX_HIGH_SEARCH_START);
-
-		phy->read_delay--;
-	} while (phy->read_delay >= CQSPI_PHY_INIT_RD);
-
-	debug("Unable to find RX high\n");
 	return -ENOENT;
 }
 
@@ -212,922 +144,673 @@ static int cadence_spi_find_rx_high_sdr(struct cadence_spi_priv *priv,
 	return -ENOENT;
 }
 
-static int cadence_spi_find_tx_low(struct cadence_spi_priv *priv,
-				   struct spi_slave *spi,
-				   struct phy_setting *phy)
+static int cadence_spi_phy_check_consecutive_ddr(struct cadence_spi_priv *priv,
+						 struct spi_slave *spi,
+						 struct phy_setting start,
+						 int target, bool match_pass,
+						 bool upward)
 {
+	struct phy_setting probe = start;
+	int step = upward ? 1 : -1;
+	int count = 1;
 	int ret;
 
-	do {
-		phy->tx = CQSPI_PHY_TX_LOW_SEARCH_START;
-		do {
-			ret = cadence_spi_phy_apply_setting(priv, phy);
-			if (!ret) {
-				ret = cadence_spi_phy_check_pattern(priv, spi);
-				if (!ret)
-					return 0;
-			}
-			phy->tx += CQSPI_PHY_DDR_SEARCH_STEP;
-		} while (phy->tx <= CQSPI_PHY_TX_LOW_SEARCH_END);
+	while (count < target) {
+		if (upward ? (probe.tx >= CQSPI_PHY_MAX_DELAY ||
+			      probe.rx >= CQSPI_PHY_MAX_DELAY) :
+			     (probe.tx == 0 || probe.rx == 0))
+			break;
+		probe.tx += step;
+		probe.rx += step;
+		ret = cadence_spi_phy_apply_setting(priv, &probe);
+		if (!ret)
+			ret = cadence_spi_phy_check_pattern(priv, spi);
+		if (!ret == match_pass)
+			count++;
+		else
+			break;
+	}
 
-		phy->read_delay++;
-	} while (phy->read_delay <= CQSPI_PHY_MAX_RD);
-
-	debug("Unable to find TX low\n");
-	return -ENOENT;
+	return count;
 }
 
-static int cadence_spi_find_tx_high(struct cadence_spi_priv *priv,
-				    struct spi_slave *spi,
-				    struct phy_setting *phy)
+static void cadence_spi_phy_find_next_match_ddr(struct cadence_spi_priv *priv,
+						struct spi_slave *spi,
+						struct phy_setting *search,
+						const struct phy_setting *limit,
+						bool match_pass, bool upward)
 {
+	int step = upward ? 1 : -1;
 	int ret;
 
-	do {
-		phy->tx = CQSPI_PHY_TX_HIGH_SEARCH_END;
-		do {
-			ret = cadence_spi_phy_apply_setting(priv, phy);
-			if (!ret) {
-				ret = cadence_spi_phy_check_pattern(priv, spi);
-				if (!ret)
-					return 0;
-			}
-			phy->tx -= CQSPI_PHY_DDR_SEARCH_STEP;
-		} while (phy->tx >= CQSPI_PHY_TX_HIGH_SEARCH_START);
-
-		phy->read_delay--;
-	} while (phy->read_delay >= CQSPI_PHY_INIT_RD);
-
-	debug("Unable to find TX high\n");
-	return -ENOENT;
+	while (upward ? (search->tx < limit->tx && search->rx < limit->rx) :
+			(search->tx > limit->tx && search->rx > limit->rx)) {
+		search->tx += step;
+		search->rx += step;
+		ret = cadence_spi_phy_apply_setting(priv, search);
+		if (!ret)
+			ret = cadence_spi_phy_check_pattern(priv, spi);
+		if (!ret == match_pass)
+			break;
+	}
 }
 
-static int cadence_spi_phy_find_gaplow(struct cadence_spi_priv *priv,
-				       struct spi_slave *spi,
-				       struct phy_setting *bottomleft,
-				       struct phy_setting *topright,
-				       struct phy_setting *gaplow)
+static void cadence_spi_phy_find_biggest_line_ddr(struct cadence_spi_priv *priv,
+						  struct spi_slave *spi,
+						  struct phy_setting *start,
+						  struct phy_setting *end,
+						  bool upward)
 {
-	struct phy_setting left, right, mid;
+	struct phy_setting probe = *start;
+	struct phy_setting best_start = *start;
+	int step = upward ? 1 : -1;
+	int cur_len = 1, best_len = 1;
 	int ret;
 
-	left = *bottomleft;
-	right = *topright;
+	for (;;) {
+		if (!upward && (probe.tx == 0 || probe.rx == 0))
+			break;
+		probe.tx += step;
+		probe.rx += step;
 
-	mid.tx = left.tx + ((right.tx - left.tx) / 2);
-	mid.rx = left.rx + ((right.rx - left.rx) / 2);
-	mid.read_delay = left.read_delay;
+		if (upward ? (probe.tx > end->tx || probe.rx > end->rx) :
+			     (probe.tx < end->tx || probe.rx < end->rx)) {
+			/* Overshot the search limit; rewind to the last tested tap */
+			probe.tx -= step;
+			probe.rx -= step;
+			break;
+		}
 
-	do {
-		ret = cadence_spi_phy_apply_setting(priv, &mid);
+		ret = cadence_spi_phy_apply_setting(priv, &probe);
 		if (!ret)
 			ret = cadence_spi_phy_check_pattern(priv, spi);
 
-		if (ret) {
-			/*
-			 * Since we couldn't find the pattern, we need to go to
-			 * the lower half.
-			 */
-			right.tx = mid.tx;
-			right.rx = mid.rx;
-
-			mid.tx = left.tx + ((mid.tx - left.tx) / 2);
-			mid.rx = left.rx + ((mid.rx - left.rx) / 2);
+		if (!ret) {
+			cur_len++;
 		} else {
-			/*
-			 * Since we found the pattern, we need to go the upper
-			 * half.
-			 */
-			left.tx = mid.tx;
-			left.rx = mid.rx;
-
-			mid.tx = mid.tx + ((right.tx - mid.tx) / 2);
-			mid.rx = mid.rx + ((right.rx - mid.rx) / 2);
+			if (cur_len > best_len) {
+				best_len = cur_len;
+				best_start.tx = probe.tx - step * cur_len;
+				best_start.rx = probe.rx - step * cur_len;
+			}
+			cur_len = 0;
+			cadence_spi_phy_find_next_match_ddr(priv, spi, &probe,
+							    end, true, upward);
+			if (upward ? (probe.tx <= end->tx &&
+				      probe.rx <= end->rx) :
+				     (probe.tx >= end->tx &&
+				      probe.rx >= end->rx))
+				cur_len = 1;
 		}
+	}
 
-	/* Break the loop if the window has closed. */
-	} while ((right.tx - left.tx >= 2) && (right.rx - left.rx >= 2));
+	if (cur_len > best_len) {
+		best_len = cur_len;
+		best_start.tx = probe.tx - step * (cur_len - 1);
+		best_start.rx = probe.rx - step * (cur_len - 1);
+	}
 
-	*gaplow = mid;
+	start->tx = best_start.tx;
+	start->rx = best_start.rx;
+	end->tx = start->tx + step * (best_len - 1);
+	end->rx = start->rx + step * (best_len - 1);
+}
+
+static int cadence_spi_phy_rd_delay_valid_ddr(struct cadence_spi_priv *priv,
+					      struct spi_slave *spi,
+					      struct phy_setting probe,
+					      struct phy_setting end)
+{
+	int ret = -ENOENT;
+
+	while ((int)probe.tx <= (int)end.tx - CQSPI_PHY_DDR_RD_STEP &&
+	       (int)probe.rx <= (int)end.rx - CQSPI_PHY_DDR_RD_STEP && ret) {
+		ret = cadence_spi_phy_apply_setting(priv, &probe);
+		if (!ret)
+			ret = cadence_spi_phy_check_pattern(priv, spi);
+		probe.tx += CQSPI_PHY_DDR_RD_STEP;
+		probe.rx += CQSPI_PHY_DDR_RD_STEP;
+	}
+
+	return ret;
+}
+
+static int cadence_spi_phy_find_valid_rd_delays_ddr(struct cadence_spi_priv *priv,
+						    struct spi_slave *spi,
+						    struct phy_setting diag_start,
+						    struct phy_setting diag_end,
+						    u8 *min_rd, u8 *max_rd)
+{
+	struct phy_setting probe;
+	u8 read_delay;
+
+	*min_rd = CQSPI_PHY_RD_INVALID;
+	*max_rd = CQSPI_PHY_RD_INVALID;
+
+	for (read_delay = CQSPI_PHY_INIT_RD; read_delay <= CQSPI_PHY_MAX_RD;
+	     read_delay++) {
+		probe = diag_start;
+		probe.read_delay = read_delay;
+		if (!cadence_spi_phy_rd_delay_valid_ddr(priv, spi, probe,
+							diag_end)) {
+			if (*min_rd == CQSPI_PHY_RD_INVALID)
+				*min_rd = read_delay;
+			*max_rd = read_delay;
+		}
+	}
+
+	return (*min_rd == CQSPI_PHY_RD_INVALID) ? -ENOENT : 0;
+}
+
+static int cadence_spi_phy_check_circle_ddr(struct cadence_spi_priv *priv,
+					    struct spi_slave *spi,
+					    const struct phy_setting *center)
+{
+	int radius = CQSPI_PHY_DDR_RADIUS;
+	int radius_sq = radius * radius;
+	int rx_min = (int)center->rx - radius;
+	int rx_max = (int)center->rx + radius;
+	int tx_min = (int)center->tx - radius;
+	int tx_max = (int)center->tx + radius;
+	struct phy_setting probe;
+	int rx_delta, tx_delta;
+	int rx, tx, ret;
+
+	if (rx_max > CQSPI_PHY_MAX_DELAY || rx_min < 0 ||
+	    tx_max > CQSPI_PHY_MAX_DELAY || tx_min < 0)
+		return -ENOENT;
+
+	/* Full disk of the given radius around center, not just two quadrants */
+	for (rx = rx_min; rx <= rx_max; rx++) {
+		rx_delta = rx - (int)center->rx;
+		for (tx = tx_min; tx <= tx_max; tx++) {
+			if (rx == (int)center->rx && tx == (int)center->tx)
+				continue;
+			tx_delta = tx - (int)center->tx;
+			if (rx_delta * rx_delta + tx_delta * tx_delta >
+			    radius_sq)
+				continue;
+			probe = (struct phy_setting){
+				.rx = rx,
+				.tx = tx,
+				.read_delay = center->read_delay
+			};
+			ret = cadence_spi_phy_apply_setting(priv, &probe);
+			if (!ret)
+				ret = cadence_spi_phy_check_pattern(priv, spi);
+			if (ret)
+				return ret;
+		}
+	}
+
 	return 0;
 }
 
-static int cadence_spi_phy_find_gaphigh(struct cadence_spi_priv *priv,
-					struct spi_slave *spi,
-					struct phy_setting *bottomleft,
-					struct phy_setting *topright,
-					struct phy_setting *gaphigh)
+static int cadence_spi_phy_find_tuning_point_ddr(struct cadence_spi_priv *priv,
+						 struct spi_slave *spi,
+						 struct phy_setting *midpt)
 {
-	struct phy_setting left, right, mid;
+	struct phy_setting top_left = *midpt, bot_right = *midpt;
+	struct phy_setting anti_diag_mid;
+	u8 prev_tx, prev_rx;
 	int ret;
 
-	left = *bottomleft;
-	right = *topright;
-
-	mid.tx = left.tx + ((right.tx - left.tx) / 2);
-	mid.rx = left.rx + ((right.rx - left.rx) / 2);
-	mid.read_delay = right.read_delay;
-
-	do {
-		ret = cadence_spi_phy_apply_setting(priv, &mid);
+	/* Walk anti-diagonal top-left (tx--, rx++) until fail */
+	while (top_left.tx > 0 && top_left.rx < CQSPI_PHY_MAX_DELAY) {
+		prev_tx = top_left.tx;
+		prev_rx = top_left.rx;
+		top_left.tx--;
+		top_left.rx++;
+		ret = cadence_spi_phy_apply_setting(priv, &top_left);
 		if (!ret)
 			ret = cadence_spi_phy_check_pattern(priv, spi);
-
 		if (ret) {
-			/*
-			 * Since we couldn't find the pattern, we need to go the
-			 * upper half.
-			 */
-			left.tx = mid.tx;
-			left.rx = mid.rx;
+			top_left.tx = prev_tx;
+			top_left.rx = prev_rx;
+			break;
+		}
+	}
 
-			mid.tx = mid.tx + ((right.tx - mid.tx) / 2);
-			mid.rx = mid.rx + ((right.rx - mid.rx) / 2);
-		} else {
-			/*
-			 * Since we found the pattern, we need to go to the
-			 * lower half.
-			 */
-			right.tx = mid.tx;
-			right.rx = mid.rx;
+	/* Walk anti-diagonal bottom-right (tx++, rx--) until fail */
+	while (bot_right.tx < CQSPI_PHY_MAX_DELAY && bot_right.rx > 0) {
+		prev_tx = bot_right.tx;
+		prev_rx = bot_right.rx;
+		bot_right.tx++;
+		bot_right.rx--;
+		ret = cadence_spi_phy_apply_setting(priv, &bot_right);
+		if (!ret)
+			ret = cadence_spi_phy_check_pattern(priv, spi);
+		if (ret) {
+			bot_right.tx = prev_tx;
+			bot_right.rx = prev_rx;
+			break;
+		}
+	}
 
-			mid.tx = left.tx + ((mid.tx - left.tx) / 2);
-			mid.rx = left.rx + ((mid.rx - left.rx) / 2);
+	/*
+	 * Anti-diagonal span in taps. On this axis |delta_tx| == |delta_rx|
+	 * for every step, so the tap count is the tx coordinate difference.
+	 */
+	if ((int)bot_right.tx - (int)top_left.tx < CQSPI_PHY_DDR_MIN_PASS_TAPS)
+		return -ENOENT;
+
+	midpt->tx = (top_left.tx + bot_right.tx) / 2;
+	midpt->rx = (top_left.rx + bot_right.rx) / 2;
+	anti_diag_mid = *midpt;
+
+	ret = cadence_spi_phy_check_circle_ddr(priv, spi, midpt);
+	if (!ret)
+		return 0;
+
+	/*
+	 * Circle check failed at the anti-diagonal midpoint. Both boundary
+	 * distances from anti_diag_mid are equal (or differ by one tap for
+	 * odd spans), so try toward top-left first, then toward bottom-right.
+	 */
+	midpt->tx = (anti_diag_mid.tx + top_left.tx) / 2;
+	midpt->rx = (anti_diag_mid.rx + top_left.rx) / 2;
+	ret = cadence_spi_phy_check_circle_ddr(priv, spi, midpt);
+	if (!ret)
+		return 0;
+
+	midpt->tx = (anti_diag_mid.tx + bot_right.tx) / 2;
+	midpt->rx = (anti_diag_mid.rx + bot_right.rx) / 2;
+	return cadence_spi_phy_check_circle_ddr(priv, spi, midpt);
+}
+
+static int cadence_spi_phy_search_diagonal_ddr(struct cadence_spi_priv *priv,
+					       struct spi_slave *spi,
+					       struct phy_setting *best,
+					       struct phy_setting diag_start,
+					       struct phy_setting diag_end)
+{
+	struct phy_setting gap_start = { .read_delay = CQSPI_PHY_RD_INVALID };
+	struct phy_setting gap_end = { .read_delay = CQSPI_PHY_RD_INVALID };
+	struct phy_setting midpoint = { .read_delay = CQSPI_PHY_RD_INVALID };
+	struct phy_setting pass_start, pass_end;
+	struct phy_setting low_midpt, high_midpt;
+	struct phy_setting *first, *second;
+	struct udevice *bus = spi->dev->parent;
+	int pass_len, low_len, high_len;
+	u8 min_rd, max_rd;
+	int run, ret;
+
+	ret = cadence_spi_phy_find_valid_rd_delays_ddr(priv, spi, diag_start,
+						       diag_end, &min_rd,
+						       &max_rd);
+	if (ret)
+		return ret;
+
+	dev_dbg(bus, "DDR PHY diagonal: valid read delays %u..%u\n", min_rd,
+		max_rd);
+
+	/* Refine pass_start: walk forward at min_rd to first passing point */
+	pass_start = diag_start;
+	pass_start.read_delay = min_rd;
+	for (;;) {
+		ret = cadence_spi_phy_apply_setting(priv, &pass_start);
+		if (!ret)
+			ret = cadence_spi_phy_check_pattern(priv, spi);
+		if (!ret)
+			break;
+		if (pass_start.tx >= CQSPI_PHY_MAX_DELAY ||
+		    pass_start.rx >= CQSPI_PHY_MAX_DELAY)
+			break;
+		pass_start.tx++;
+		pass_start.rx++;
+	}
+
+	/* Refine pass_end: walk backward at max_rd to first passing point */
+	pass_end = diag_end;
+	pass_end.read_delay = max_rd;
+	for (;;) {
+		ret = cadence_spi_phy_apply_setting(priv, &pass_end);
+		if (!ret)
+			ret = cadence_spi_phy_check_pattern(priv, spi);
+		if (!ret)
+			break;
+		if (pass_end.tx == 0 || pass_end.rx == 0)
+			break;
+		pass_end.tx--;
+		pass_end.rx--;
+	}
+
+	if (pass_start.read_delay == pass_end.read_delay) {
+		/* Single region: find the longest run, take its midpoint */
+		cadence_spi_phy_find_biggest_line_ddr(priv, spi, &pass_start,
+						      &pass_end, true);
+
+		/* tx and rx increase equally on the diagonal */
+		pass_len = (int)pass_end.tx - (int)pass_start.tx;
+		dev_dbg(bus, "DDR PHY diagonal: single region, %d taps\n",
+			pass_len);
+		if (pass_len < CQSPI_PHY_DDR_MIN_PASS_TAPS)
+			return -ENOENT;
+
+		midpoint.tx = (pass_start.tx + pass_end.tx) / 2;
+		midpoint.rx = (pass_start.rx + pass_end.rx) / 2;
+		midpoint.read_delay = pass_start.read_delay;
+
+		ret = cadence_spi_phy_find_tuning_point_ddr(priv, spi,
+							    &midpoint);
+		if (!ret)
+			*best = midpoint;
+		return ret;
+	}
+
+	/* Dual regions: locate bottom passing region from pass_start upward */
+	do {
+		run = cadence_spi_phy_check_consecutive_ddr(priv, spi,
+							    pass_start,
+							    CQSPI_PHY_DDR_CONSEC_PASS,
+							    true, true);
+		if (run < CQSPI_PHY_DDR_CONSEC_PASS) {
+			int adv = run + 1;
+
+			if (pass_start.tx > CQSPI_PHY_MAX_DELAY - adv)
+				adv = CQSPI_PHY_MAX_DELAY - pass_start.tx;
+			if (pass_start.rx > CQSPI_PHY_MAX_DELAY - adv)
+				adv = CQSPI_PHY_MAX_DELAY - pass_start.rx;
+
+			pass_start.tx += adv;
+			pass_start.rx += adv;
+			cadence_spi_phy_find_next_match_ddr(priv, spi,
+							    &pass_start,
+							    &pass_end, true,
+							    true);
+		}
+	} while (run < CQSPI_PHY_DDR_CONSEC_PASS &&
+		 pass_start.tx < pass_end.tx);
+
+	if (run < CQSPI_PHY_DDR_CONSEC_PASS) {
+		pass_start.read_delay = CQSPI_PHY_RD_INVALID;
+	} else {
+		/*
+		 * Walk past confirmed region to find gap start boundary.
+		 * Clamp the jump so tx/rx never step past CQSPI_PHY_MAX_DELAY.
+		 */
+		int off = CQSPI_PHY_DDR_CONSEC_PASS + 1;
+
+		if (pass_start.tx > CQSPI_PHY_MAX_DELAY - off)
+			off = CQSPI_PHY_MAX_DELAY - pass_start.tx;
+		if (pass_start.rx > CQSPI_PHY_MAX_DELAY - off)
+			off = CQSPI_PHY_MAX_DELAY - pass_start.rx;
+
+		gap_start.rx = pass_start.rx + off;
+		gap_start.tx = pass_start.tx + off;
+		gap_start.read_delay = pass_start.read_delay;
+
+		for (;;) {
+			ret = cadence_spi_phy_apply_setting(priv, &gap_start);
+			if (!ret)
+				ret = cadence_spi_phy_check_pattern(priv, spi);
+			if (ret)
+				break;
+			if (gap_start.tx >= CQSPI_PHY_MAX_DELAY ||
+			    gap_start.rx >= CQSPI_PHY_MAX_DELAY)
+				break;
+			gap_start.tx++;
+			gap_start.rx++;
 		}
 
-	/* Break the loop if the window has closed. */
-	} while ((right.tx - left.tx >= 2) && (right.rx - left.rx >= 2));
+		do {
+			run = cadence_spi_phy_check_consecutive_ddr(priv, spi,
+								    gap_start,
+								    CQSPI_PHY_DDR_CONSEC_FAIL,
+								    false, true);
+			if (run < CQSPI_PHY_DDR_CONSEC_FAIL) {
+				int adv = run + 1;
 
-	*gaphigh = mid;
-	return 0;
+				if (gap_start.tx > CQSPI_PHY_MAX_DELAY - adv)
+					adv = CQSPI_PHY_MAX_DELAY - gap_start.tx;
+				if (gap_start.rx > CQSPI_PHY_MAX_DELAY - adv)
+					adv = CQSPI_PHY_MAX_DELAY - gap_start.rx;
+
+				gap_start.tx += adv;
+				gap_start.rx += adv;
+				cadence_spi_phy_find_next_match_ddr(priv, spi,
+								    &gap_start,
+								    &pass_end,
+								    false,
+								    true);
+			}
+		} while (run < CQSPI_PHY_DDR_CONSEC_FAIL &&
+			 gap_start.tx < pass_end.tx);
+
+		/* Narrow pass_start..gap_start to the best passing run */
+		cadence_spi_phy_find_biggest_line_ddr(priv, spi, &pass_start,
+						      &gap_start, true);
+	}
+
+	/* Locate top passing region from pass_end downward */
+	do {
+		run = cadence_spi_phy_check_consecutive_ddr(priv, spi,
+							    pass_end,
+							    CQSPI_PHY_DDR_CONSEC_PASS,
+							    true, false);
+		if (run < CQSPI_PHY_DDR_CONSEC_PASS) {
+			int adv = run + 1;
+
+			if (pass_end.tx < adv)
+				adv = pass_end.tx;
+			if (pass_end.rx < adv)
+				adv = pass_end.rx;
+
+			pass_end.tx -= adv;
+			pass_end.rx -= adv;
+			cadence_spi_phy_find_next_match_ddr(priv, spi,
+							    &pass_end,
+							    &pass_start, true,
+							    false);
+		}
+	} while (run < CQSPI_PHY_DDR_CONSEC_PASS &&
+		 pass_end.tx >= (pass_start.tx + CQSPI_PHY_DDR_CONSEC_PASS));
+
+	if (run < CQSPI_PHY_DDR_CONSEC_PASS) {
+		pass_end.read_delay = CQSPI_PHY_RD_INVALID;
+	} else {
+		/*
+		 * Walk past confirmed region to find gap end boundary.
+		 * Clamp the jump so tx/rx never step below zero.
+		 */
+		int off = CQSPI_PHY_DDR_CONSEC_PASS + 1;
+
+		if (pass_end.tx < off)
+			off = pass_end.tx;
+		if (pass_end.rx < off)
+			off = pass_end.rx;
+
+		gap_end.rx = pass_end.rx - off;
+		gap_end.tx = pass_end.tx - off;
+		gap_end.read_delay = pass_end.read_delay;
+
+		for (;;) {
+			ret = cadence_spi_phy_apply_setting(priv, &gap_end);
+			if (!ret)
+				ret = cadence_spi_phy_check_pattern(priv, spi);
+			if (ret)
+				break;
+			if (gap_end.tx == 0 || gap_end.rx == 0)
+				break;
+			gap_end.tx--;
+			gap_end.rx--;
+		}
+
+		do {
+			run = cadence_spi_phy_check_consecutive_ddr(priv, spi,
+								    gap_end,
+								    CQSPI_PHY_DDR_CONSEC_FAIL,
+								    false, false);
+			if (run < CQSPI_PHY_DDR_CONSEC_FAIL) {
+				int adv = run + 1;
+
+				if (gap_end.tx < adv)
+					adv = gap_end.tx;
+				if (gap_end.rx < adv)
+					adv = gap_end.rx;
+
+				gap_end.tx -= adv;
+				gap_end.rx -= adv;
+				cadence_spi_phy_find_next_match_ddr(priv, spi,
+								    &gap_end,
+								    &pass_start,
+								    false,
+								    false);
+			}
+		} while (run < CQSPI_PHY_DDR_CONSEC_FAIL &&
+			 gap_end.tx >= pass_start.tx);
+
+		/* Narrow gap_end..pass_end to the best passing run */
+		cadence_spi_phy_find_biggest_line_ddr(priv, spi, &pass_end,
+						      &gap_end, false);
+	}
+
+	if (pass_start.read_delay == CQSPI_PHY_RD_INVALID &&
+	    pass_end.read_delay == CQSPI_PHY_RD_INVALID)
+		return -ENOENT;
+
+	low_len = 0;
+	high_len = 0;
+
+	if (pass_start.read_delay != CQSPI_PHY_RD_INVALID)
+		low_len = (int)gap_start.tx - (int)pass_start.tx;
+
+	if (pass_end.read_delay != CQSPI_PHY_RD_INVALID)
+		high_len = (int)pass_end.tx - (int)gap_end.tx;
+
+	dev_dbg(bus,
+		"DDR PHY diagonal: dual region, low=%d taps, high=%d taps\n",
+		low_len, high_len);
+
+	if (low_len < CQSPI_PHY_DDR_MIN_PASS_TAPS &&
+	    high_len < CQSPI_PHY_DDR_MIN_PASS_TAPS)
+		return -ENOENT;
+
+	low_midpt = (struct phy_setting){ .read_delay = CQSPI_PHY_RD_INVALID };
+	high_midpt = (struct phy_setting){ .read_delay = CQSPI_PHY_RD_INVALID };
+
+	if (high_len >= CQSPI_PHY_DDR_MIN_PASS_TAPS) {
+		high_midpt.rx = (pass_end.rx + gap_end.rx) / 2;
+		high_midpt.tx = (pass_end.tx + gap_end.tx) / 2;
+		high_midpt.read_delay = pass_end.read_delay;
+	}
+
+	if (low_len >= CQSPI_PHY_DDR_MIN_PASS_TAPS) {
+		low_midpt.rx = (pass_start.rx + gap_start.rx) / 2;
+		low_midpt.tx = (pass_start.tx + gap_start.tx) / 2;
+		low_midpt.read_delay = pass_start.read_delay;
+	}
+
+	/* Try the larger region first; fall back to the smaller one */
+	if (high_len >= low_len) {
+		first = high_midpt.read_delay != CQSPI_PHY_RD_INVALID ?
+				&high_midpt :
+				NULL;
+		second = low_midpt.read_delay != CQSPI_PHY_RD_INVALID ?
+				 &low_midpt :
+				 NULL;
+	} else {
+		first = low_midpt.read_delay != CQSPI_PHY_RD_INVALID ?
+				&low_midpt :
+				NULL;
+		second = high_midpt.read_delay != CQSPI_PHY_RD_INVALID ?
+				 &high_midpt :
+				 NULL;
+	}
+
+	if (first &&
+	    !cadence_spi_phy_find_tuning_point_ddr(priv, spi, first)) {
+		*best = *first;
+		return 0;
+	}
+
+	if (second &&
+	    !cadence_spi_phy_find_tuning_point_ddr(priv, spi, second)) {
+		*best = *second;
+		return 0;
+	}
+
+	return -ENOENT;
 }
 
 static int cadence_spi_phy_calibrate(struct cadence_spi_priv *priv,
 				     struct spi_slave *spi)
 {
-	struct phy_setting rxlow, rxhigh, txlow, txhigh;
-	struct phy_setting srxlow, srxhigh;
-	struct phy_setting bottomleft, topright, searchpoint;
-	struct phy_setting gaplow, gaphigh;
-	struct phy_setting backuppoint, backupcornerpoint;
 	struct udevice *bus = spi->dev->parent;
-	int ret, tmp;
-	bool primary = 1, secondary = 1;
+	struct phy_setting diag_start, diag_end;
+	struct phy_setting tuning_pt = { 0 };
+	int shift, ret;
 
 	priv->use_phy = true;
 
-	/*
-	 * Finding rx fails at some of the tx values based on the H/W platform.
-	 * A window of tx values is used to find the rx without errors. This
-	 * can increase the number of CPU cycles taken for the PHY tuning in
-	 * the cases where more tx values need to be parsed to find a stable
-	 * rx.
-	 */
-
-	/* ***********************Golden rxlow search*********************** */
-
-	/*
-	 *
-	 *		rx
-	 *	    127	^
-	 *		|
-	 *		|	xxxxx     ++++++++++++++++++++
-	 *		|	xxxxxx     +++++++++++++++++++
-	 *		|	xxxxxxx     ++++++++++++++++++
-	 *		|	xxxxxxxx     +++++++++++++++++
-	 *		|	xxxxxxxxx     ++++++++++++++++
-	 *		|	xxxxxxxxxx     +++++++++++++++
-	 *		|	xxxxxxxxxxx     ++++++++++++++
-	 *		|	|xxxxx|xxxxx     +++++++++++++
-	 *		|	|xxxxx|xxxxxx     ++++++++++++
-	 *	search	|	|xxxxx|xxxxxxx     +++++++++++
-	 *	rxlow --------->|xxxxx|xxxxxxxx     ++++++++++
-	 *		|	|xxxxx|xxxxxxxxx     +++++++++
-	 *		|	|xxxxx|xxxxxxxxxx     ++++++++
-	 *		|	|xxxxx|xxxxxxxxxxx     +++++++
-	 *		|	|     |
-	 *		--------|-----|----------------------------> tx
-	 *		0	|     |				 127
-	 *		    txlow     txlow
-	 *		    start     end
-	 *
-	 */
-
-	/*
-	 *	|----------------------------------------------------------|
-	 *	| Primary | Secondary | Final                              |
-	 *	| Search  | Search    | Point                              |
-	 *	|---------|-----------|------------------------------------|
-	 *	| Fail    | Fail      | Return Fail                        |
-	 *	|---------|-----------|------------------------------------|
-	 *	| Fail    | Pass      | Return Fail                        |
-	 *	|---------|-----------|------------------------------------|
-	 *	| Pass    | Fail      | Return Fail                        |
-	 *	|---------|-----------|------------------------------------|
-	 *	| Pass    | Pass      | rx = min(primary.rx, secondary.rx) |
-	 *	|         |           | tx = primary.tx                    |
-	 *	|         |           | read_delay =                       |
-	 *	|	  |	      |		min(primary.read_delay,    |
-	 *	|	  |	      |		    secondary.read_delay)  |
-	 *	|----------------------------------------------------------|
-	 */
-
-	/* *******************Golden Primary rxlow search******************* */
-	/*
-	 * To find the rx boundaries, we fix a valid tx and search through rx
-	 * range, read_delay values. As we are not sure of a valid tx we use a
-	 * window of tx values to find the rx boundaries.
-	 */
-
-	rxlow.tx = CQSPI_PHY_TX_LOOKUP_LOW_START;
-	do {
-		dev_dbg(bus, "Searching for Godlen Primary rxlow on TX = %d\n",
-			rxlow.tx);
-		rxlow.read_delay = CQSPI_PHY_INIT_RD;
-		ret = cadence_spi_find_rx_low(priv, spi, &rxlow);
-		rxlow.tx += CQSPI_PHY_DDR_SEARCH_STEP;
-	} while (ret && rxlow.tx <= CQSPI_PHY_TX_LOOKUP_LOW_END);
-	if (ret)
-		goto out;
-	dev_dbg(bus, "Golden Primary rxlow: RX: %d TX: %d RD: %d\n", rxlow.rx,
-		rxlow.tx, rxlow.read_delay);
-
-	/* ******************Golden Secondary rxlow search****************** */
-	/* Search for one more rxlow at different tx */
-
-	if (rxlow.tx <= (CQSPI_PHY_TX_LOOKUP_LOW_END -
-			 CQSPI_PHY_SEARCH_OFFSET))
-		srxlow.tx = rxlow.tx + CQSPI_PHY_SEARCH_OFFSET;
-	else
-		srxlow.tx = CQSPI_PHY_TX_LOOKUP_LOW_END;
-	dev_dbg(bus, "Searching for Golden Secondary rxlow on TX = %d\n",
-		srxlow.tx);
-	srxlow.read_delay = CQSPI_PHY_INIT_RD;
-	ret = cadence_spi_find_rx_low(priv, spi, &srxlow);
-	if (ret)
-		goto out;
-	dev_dbg(bus, "Golden Secondary rxlow: RX: %d TX: %d RD: %d\n",
-		srxlow.rx, srxlow.tx, srxlow.read_delay);
-
-	rxlow.rx = min(rxlow.rx, srxlow.rx);
-	rxlow.read_delay = min(rxlow.read_delay, srxlow.read_delay);
-	dev_dbg(bus, "Golden Final rxlow: RX: %d TX: %d RD: %d\n", rxlow.rx,
-		rxlow.tx, rxlow.read_delay);
-
-	/* **********************Golden rxhigh search********************** */
-
-	/*
-	 *
-	 *		rx
-	 *	    127	^
-	 *		|
-	 *		|	|xxxx     ++++++++++++++++++++
-	 *		|	|xxxxx     +++++++++++++++++++
-	 *    search	|	|xxxxxx     ++++++++++++++++++
-	 *    rxhigh  --------->|xxxxxxx     +++++++++++++++++
-	 *    on fixed  |	|xxxxxxxx     ++++++++++++++++
-	 *    tx	|	|xxxxxxxxx     +++++++++++++++
-	 *		|	|xxxxxxxxxx     ++++++++++++++
-	 *		|	xxxxxxxxxxxx     +++++++++++++
-	 *		|	xxxxxxxxxxxxx     ++++++++++++
-	 *		|	xxxxxxxxxxxxxx     +++++++++++
-	 *		|	xxxxxxxxxxxxxxx     ++++++++++
-	 *		|	xxxxxxxxxxxxxxxx     +++++++++
-	 *		|	xxxxxxxxxxxxxxxxx     ++++++++
-	 *		|	xxxxxxxxxxxxxxxxxx     +++++++
-	 *		|
-	 *		-------------------------------------------> tx
-	 *		0					 127
-	 *
-	 */
-
-	/*
-	 *	|----------------------------------------------------------|
-	 *	| Primary | Secondary | Final                              |
-	 *	| Search  | Search    | Point                              |
-	 *	|---------|-----------|------------------------------------|
-	 *	| Fail    | Fail      | Return Fail                        |
-	 *	|---------|-----------|------------------------------------|
-	 *	| Fail    | Pass      | Choose Secondary                   |
-	 *	|---------|-----------|------------------------------------|
-	 *	| Pass    | Fail      | Choose Primary                     |
-	 *	|---------|-----------|------------------------------------|
-	 *	| Pass    | Pass      | if (secondary.rx > primary.rx)     |
-	 *	|         |           |		Choose Secondary           |
-	 *	|         |           | else                               |
-	 *	|	  |	      |		Choose Primary             |
-	 *	|----------------------------------------------------------|
-	 */
-
-	/* ******************Golden Primary rxhigh search****************** */
-	/*
-	 * To find rxhigh we use the tx values of rxlow. Start the read_delay
-	 * from maximum and decrement it. As these are valid values and rxhigh
-	 * read_delay is always greater than or equal to rxlow read_delay.
-	 */
-
-	rxhigh.tx = rxlow.tx;
-	dev_dbg(bus, "Searching for Golden Primary rxhigh on TX = %d\n",
-		rxhigh.tx);
-	rxhigh.read_delay = CQSPI_PHY_MAX_RD;
-	ret = cadence_spi_find_rx_high(priv, spi, &rxhigh);
-	if (ret)
-		primary = 0;
-	dev_dbg(bus, "Golden Primary rxhigh: RX: %d TX: %d RD: %d\n", rxhigh.rx,
-		rxhigh.tx, rxhigh.read_delay);
-
-	/* *****************Golden Secondary rxhigh search***************** */
-	/* Search for one more rxhigh at different tx */
-
-	if (rxhigh.tx <=
-	    (CQSPI_PHY_TX_LOOKUP_LOW_END - CQSPI_PHY_SEARCH_OFFSET))
-		srxhigh.tx = rxhigh.tx + CQSPI_PHY_SEARCH_OFFSET;
-	else
-		srxhigh.tx = CQSPI_PHY_TX_LOOKUP_LOW_END;
-	dev_dbg(bus, "Searching for Golden Secondary rxhigh on TX = %d\n",
-		srxhigh.tx);
-	srxhigh.read_delay = CQSPI_PHY_MAX_RD;
-	ret = cadence_spi_find_rx_high(priv, spi, &srxhigh);
-	if (ret)
-		secondary = 0;
-	dev_dbg(bus, "Golden Secondary rxhigh: RX: %d TX: %d RD: %d\n",
-		srxhigh.rx, srxhigh.tx, srxhigh.read_delay);
-
-	if (primary || secondary) {
-		if (srxhigh.rx > rxhigh.rx)
-			rxhigh = srxhigh;
-	} else {
-		goto out;
-	}
-	dev_dbg(bus, "Golden Final rxhigh: RX: %d TX: %d RD: %d\n", rxhigh.rx,
-		rxhigh.tx, rxhigh.read_delay);
-
-	primary = 1;
-	secondary = 1;
-
-	/*
-	 * Check a different point if rxlow and rxhigh are on the same read
-	 * delay. This avoids mistaking the failing region for an RX boundary.
-	 */
-
-	if (rxlow.read_delay == rxhigh.read_delay) {
-		dev_dbg(bus, "rxlow and rxhigh at the same read delay.\n");
-
-		/* *******************Backup rxlow search******************* */
-
-		/* Look for RX boundaries at upper TX range. */
-
-		/*
-		 *
-		 *		rx
-		 *	    127	^
-		 *		|
-		 *		|	xxxxx     ++++++++++++++++++++
-		 *		|	xxxxxx     +++++++++++++++++++
-		 *		|	xxxxxxx     ++++++++++++++++++
-		 *		|	xxxxxxxx     +++++++++++++++++
-		 *		|	xxxxxxxxx     ++++++++++++++++
-		 *		|	xxxxxxxxxx     +++++++++++++++
-		 *		|	xxxxxxxxxxx     ++++++++++++++
-		 *		|	xxxxxxxxxxxx     +++++++|++++|
-		 *		|	xxxxxxxxxxxxx     ++++++|++++|
-		 *	search	|	xxxxxxxxxxxxxx     +++++|++++|
-		 *	rxlow --------------------------------->|++++|
-		 *		|	xxxxxxxxxxxxxxxx     +++|++++|
-		 *		|	xxxxxxxxxxxxxxxxx     ++|++++|
-		 *		|	xxxxxxxxxxxxxxxxxx     +|++++|
-		 *		|				|    |
-		 *		--------------------------------|----|-----> tx
-		 *		0				|    |	 127
-		 *`					   txhigh    txhigh
-		 *					    start    end
-		 *
-		 */
-
-		/*
-		 *	|-----------------------------------------------------|
-		 *	| Primary | Secondary | Final                         |
-		 *	| Search  | Search    | Point                         |
-		 *	|---------|-----------|-------------------------------|
-		 *	| Fail    | Fail      | Return Fail                   |
-		 *	|---------|-----------|-------------------------------|
-		 *	| Fail    | Pass      | Return Fail                   |
-		 *	|---------|-----------|-------------------------------|
-		 *	| Pass    | Fail      | Return Fail                   |
-		 *	|---------|-----------|-------------------------------|
-		 *	| Pass    | Pass      | rx =			      |
-		 *	|	  |	      |	 min(primary.rx, secondary.rx)|
-		 *	|         |           | tx = primary.tx               |
-		 *	|         |           | read_delay =                  |
-		 *	|	  |	      |	 min(primary.read_delay,      |
-		 *	|	  |	      |	     secondary.read_delay)    |
-		 *	|-----------------------------------------------------|
-		 */
-
-		/* ***************Backup Primary rxlow search*************** */
-		/*
-		 * Find the rx boundaries using the tx window at the higher
-		 * end. We start at the window end and decrement the tx value
-		 * until we find the valid point.
-		 */
-
-		backuppoint.tx = CQSPI_PHY_TX_LOOKUP_HIGH_END;
-		do {
-			dev_dbg(bus, "Searching for Backup Primary rxlow on TX = %d\n",
-				backuppoint.tx);
-			backuppoint.read_delay = CQSPI_PHY_INIT_RD;
-			ret = cadence_spi_find_rx_low(priv, spi, &backuppoint);
-			backuppoint.tx -= CQSPI_PHY_DDR_SEARCH_STEP;
-		} while (ret &&
-			 backuppoint.tx >= CQSPI_PHY_TX_LOOKUP_HIGH_START);
-		if (ret)
-			goto out;
-		dev_dbg(bus, "Backup Primary rxlow: RX: %d TX: %d RD: %d\n",
-			backuppoint.rx, backuppoint.tx,
-			backuppoint.read_delay);
-
-		/* **************Backup Secondary rxlow search************** */
-		/* Search for one more rxlow at different tx */
-
-		if (backuppoint.tx >=
-		    (CQSPI_PHY_TX_LOOKUP_HIGH_START + CQSPI_PHY_SEARCH_OFFSET))
-			srxlow.tx = backuppoint.tx - CQSPI_PHY_SEARCH_OFFSET;
-		else
-			srxlow.tx = CQSPI_PHY_TX_LOOKUP_HIGH_START;
-		dev_dbg(bus,
-			"Searching for Backup Secondary rxlow on TX = %d\n",
-			srxlow.tx);
-		srxlow.read_delay = CQSPI_PHY_INIT_RD;
-		ret = cadence_spi_find_rx_low(priv, spi, &srxlow);
-		if (ret)
-			goto out;
-		dev_dbg(bus, "Backup Secondary rxlow: RX: %d TX: %d RD: %d\n",
-			srxlow.rx, srxlow.tx, srxlow.read_delay);
-
-		backuppoint.rx = min(backuppoint.rx, srxlow.rx);
-		backuppoint.read_delay =
-		    min(backuppoint.read_delay, srxlow.read_delay);
-		dev_dbg(bus, "Backup Final rxlow: RX: %d TX: %d RD: %d\n",
-			backuppoint.rx, backuppoint.tx,
-			backuppoint.read_delay);
-
-		if (backuppoint.rx < rxlow.rx) {
-			rxlow = backuppoint;
-			dev_dbg(bus, "Updating rxlow to the one at TX = %d\n",
-				backuppoint.tx);
-		}
-		dev_dbg(bus, "Final rxlow: RX: %d TX: %d RD: %d\n", rxlow.rx,
-			rxlow.tx, rxlow.read_delay);
-
-		/* ******************Backup rxhigh search****************** */
-
-		/*
-		 *
-		 *		rx
-		 *	    127	^
-		 *		|
-		 *		|	xxxxx     +++++++++++++++++++|
-		 *		|	xxxxxx     ++++++++++++++++++|
-		 *    search	|	xxxxxxx     +++++++++++++++++|
-		 *    rxhigh  -------------------------------------->|
-		 *    on fixed	|	xxxxxxxxx     +++++++++++++++|
-		 *    tx	|	xxxxxxxxxx     ++++++++++++++|
-		 *		|	xxxxxxxxxxx     +++++++++++++|
-		 *		|	xxxxxxxxxxxx     +++++++++++++
-		 *		|	xxxxxxxxxxxxx     ++++++++++++
-		 *		|	xxxxxxxxxxxxxx     +++++++++++
-		 *		|	xxxxxxxxxxxxxxx     ++++++++++
-		 *		|	xxxxxxxxxxxxxxxx     +++++++++
-		 *		|	xxxxxxxxxxxxxxxxx     ++++++++
-		 *		|	xxxxxxxxxxxxxxxxxx     +++++++
-		 *		|
-		 *		-------------------------------------------> tx
-		 *		0					 127
-		 *
-		 */
-
-		/*
-		 *	|-----------------------------------------------------|
-		 *	| Primary | Secondary | Final                         |
-		 *	| Search  | Search    | Point                         |
-		 *	|---------|-----------|-------------------------------|
-		 *	| Fail    | Fail      | Return Fail                   |
-		 *	|---------|-----------|-------------------------------|
-		 *	| Fail    | Pass      | Choose Secondary              |
-		 *	|---------|-----------|-------------------------------|
-		 *	| Pass    | Fail      | Choose Primary                |
-		 *	|---------|-----------|-------------------------------|
-		 *	| Pass    | Pass      | if (secondary.rx > primary.rx)|
-		 *	|         |           |		Choose Secondary      |
-		 *	|         |           | else                          |
-		 *	|	  |	      |		Choose Primary        |
-		 *	|-----------------------------------------------------|
-		 */
-
-		/* **************Backup Primary rxhigh search************** */
-		/*
-		 * To find rxhigh we use the tx values of backuppoint. Start
-		 * the read_delay from maximum and decrement it. As these are
-		 * valid values and rxhigh read_delay is always greater than or
-		 * equal to rxlow read_delay.
-		 */
-
-		dev_dbg(bus, "Searching for Backup Primary rxhigh on TX = %d\n",
-			backuppoint.tx);
-		backuppoint.read_delay = CQSPI_PHY_MAX_RD;
-		ret = cadence_spi_find_rx_high(priv, spi, &backuppoint);
-		if (ret)
-			primary = 0;
-		dev_dbg(bus, " Backup Primary rxhigh: RX: %d TX: %d RD: %d\n",
-			backuppoint.rx, backuppoint.tx,
-			backuppoint.read_delay);
-
-		/* *************Backup Secondary rxhigh search************* */
-		/* Search for one more rxhigh at different tx */
-
-		if (backuppoint.tx >=
-		    (CQSPI_PHY_TX_LOOKUP_HIGH_START + CQSPI_PHY_SEARCH_OFFSET))
-			srxhigh.tx = backuppoint.tx - CQSPI_PHY_SEARCH_OFFSET;
-		else
-			srxhigh.tx = CQSPI_PHY_TX_LOOKUP_HIGH_START;
-		dev_dbg(bus,
-			"Searching for Backup Secondary rxhigh on TX = %d\n",
-			srxhigh.tx);
-		srxhigh.read_delay = CQSPI_PHY_MAX_RD;
-		ret = cadence_spi_find_rx_high(priv, spi, &srxhigh);
-		if (ret)
-			secondary = 0;
-		dev_dbg(bus, "Backup Secondary rxhigh: RX: %d TX: %d RD: %d\n",
-			srxhigh.rx, srxhigh.tx, srxhigh.read_delay);
-
-		if (primary || secondary) {
-			if (srxhigh.rx > backuppoint.rx)
-				backuppoint = srxhigh;
-		} else {
-			goto out;
-		}
-		dev_dbg(bus, "Backup Final rxhigh: RX: %d TX: %d RD: %d\n",
-			backuppoint.rx, backuppoint.tx,
-			backuppoint.read_delay);
-
-		if (backuppoint.rx > rxhigh.rx) {
-			rxhigh = backuppoint;
-			dev_dbg(bus, "Updating rxhigh to the one at TX = %d\n",
-				backuppoint.tx);
-		}
-		dev_dbg(bus, "Final rxhigh: RX: %d TX: %d RD: %d\n", rxhigh.rx,
-			rxhigh.tx, rxhigh.read_delay);
-	}
-
-	/* ***********************Golden txlow search*********************** */
-	/* Look for TX boundaries at 1/4 of RX window. */
-
-	/*
-	 *
-	 *		rx
-	 *	    127	^
-	 *		|
-	 *     rxhigh --------->xxxxx     ++++++++++++++++++++
-	 *		|	xxxxxx     +++++++++++++++++++
-	 *		|	xxxxxxx     ++++++++++++++++++
-	 *		|	xxxxxxxx     +++++++++++++++++
-	 *		|	xxxxxxxxx     ++++++++++++++++
-	 *		|	xxxxxxxxxx     +++++++++++++++
-	 *		|	xxxxxxxxxxx     ++++++++++++++
-	 *		|	xxxxxxxxxxxx     +++++++++++++
-	 *    fix rx	|	xxxxxxxxxxxxx     ++++++++++++
-	 *    1/4 b/w ---------><------->xxxxx     +++++++++++
-	 *    rxlow and	|	xxxx|xxxxxxxxxx     ++++++++++
-	 *    rxhigh	|	xxxx|xxxxxxxxxxx     +++++++++
-	 *		|	xxxx|xxxxxxxxxxxx     ++++++++
-	 *	rxlow --------->xxxx|xxxxxxxxxxxxx     +++++++
-	 *		|	    |
-	 *		------------|------------------------------> tx
-	 *		0	    |				 127
-	 *		       search
-	 *			txlow
-	 *
-	 */
-
-	txlow.rx = rxlow.rx + ((rxhigh.rx - rxlow.rx) / 4);
-	dev_dbg(bus, "Searching for Golden txlow on RX = %d\n", txlow.rx);
-	txlow.read_delay = CQSPI_PHY_INIT_RD;
-	ret = cadence_spi_find_tx_low(priv, spi, &txlow);
-	if (ret)
-		goto out;
-	dev_dbg(bus, "Golden txlow: RX: %d TX: %d RD: %d\n", txlow.rx,
-		txlow.tx, txlow.read_delay);
-
-	/* **********************Golden txhigh search********************** */
-	/* Start from maximum read_delay and decrememt it */
-
-	/*
-	 *
-	 *		rx
-	 *	    127	^
-	 *		|
-	 *     rxhigh --------->xxxxx     ++++++++++++++++++++
-	 *		|	xxxxxx     +++++++++++++++++++
-	 *		|	xxxxxxx     ++++++++++++++++++
-	 *		|	xxxxxxxx     +++++++++++++++++
-	 *		|	xxxxxxxxx     ++++++++++++++++
-	 *		|	xxxxxxxxxx     +++++++++++++++
-	 *		|	xxxxxxxxxxx     ++++++++++++++
-	 *		|	xxxxxxxxxxxx     +++++++++++++
-	 *    fix rx	|	xxxxxxxxxxxxx     ++++++++++++
-	 *    1/4 b/w --------------------------------><----->
-	 *    rxlow and	|	xxxxxxxxxxxxxxx     ++++++|+++
-	 *    rxhigh	|	xxxxxxxxxxxxxxxx     +++++|+++
-	 *		|	xxxxxxxxxxxxxxxxx     ++++|+++
-	 *	rxlow --------->xxxxxxxxxxxxxxxxxx     +++|+++
-	 *		|				  |
-	 *		----------------------------------|--------> tx
-	 *		0				  |	 127
-	 *					     search
-	 *					     txhigh
-	 *
-	 */
-
-	txhigh.rx = txlow.rx;
-	dev_dbg(bus, "Searching for Golden txhigh on RX = %d\n", txhigh.rx);
-	txhigh.read_delay = CQSPI_PHY_MAX_RD;
-	ret = cadence_spi_find_tx_high(priv, spi, &txhigh);
-	if (ret)
-		goto out;
-	dev_dbg(bus, "Golden txhigh: RX: %d TX: %d RD: %d\n", txhigh.rx,
-		txhigh.tx, txhigh.read_delay);
-
-	/*
-	 * Check a different point if txlow and txhigh are on the same read
-	 * delay. This avoids mistaking the failing region for an TX boundary.
-	 */
-	if (txlow.read_delay == txhigh.read_delay) {
-		/* *******************Backup txlow search******************* */
-		/* Look for TX boundaries at 3/4 of RX window. */
-
-		/*
-		 *
-		 *		rx
-		 *	    127	^
-		 *		|
-		 *     rxhigh --------->xxxxx     ++++++++++++++++++++
-		 *		|	xxxxxx     +++++++++++++++++++
-		 *    fix rx	|	xxxxxxx     ++++++++++++++++++
-		 *    3/4 b/w ---------><----->x     +++++++++++++++++
-		 *    rxlow and	|	xxxx|xxxx     ++++++++++++++++
-		 *    rxhigh	|	xxxx|xxxxx     +++++++++++++++
-		 *		|	xxxx|xxxxxx     ++++++++++++++
-		 *		|	xxxx|xxxxxxx     +++++++++++++
-		 *		|	xxxx|xxxxxxxx     ++++++++++++
-		 *		|	xxxx|xxxxxxxxx     +++++++++++
-		 *		|	xxxx|xxxxxxxxxx     ++++++++++
-		 *		|	xxxx|xxxxxxxxxxx     +++++++++
-		 *		|	xxxx|xxxxxxxxxxxx     ++++++++
-		 *	rxlow --------->xxxx|xxxxxxxxxxxxx     +++++++
-		 *		|	    |
-		 *		------------|------------------------------> tx
-		 *		0	    |				 127
-		 *		       search
-		 *			txlow
-		 *
-		 */
-
-		dev_dbg(bus, "txlow and txhigh at the same read delay.\n");
-		backuppoint.rx = rxlow.rx + (3 * (rxhigh.rx - rxlow.rx) / 4);
-		dev_dbg(bus, "Searching for Backup txlow on RX = %d\n",
-			backuppoint.rx);
-		backuppoint.read_delay = CQSPI_PHY_INIT_RD;
-		ret = cadence_spi_find_tx_low(priv, spi, &backuppoint);
-		if (ret)
-			goto out;
-		dev_dbg(bus, "Backup txlow: RX: %d TX: %d RD: %d\n",
-			backuppoint.rx, backuppoint.tx,
-			backuppoint.read_delay);
-
-		if (backuppoint.tx < txlow.tx) {
-			txlow = backuppoint;
-			dev_dbg(bus, "Updating txlow with the one at RX = %d\n",
-				backuppoint.rx);
-		}
-		dev_dbg(bus, "Final txlow: RX: %d TX: %d RD: %d\n", txlow.rx,
-			txlow.tx, txlow.read_delay);
-
-		/* ******************Backup txhigh search****************** */
-		/* Start from maximum read_delay and decrememt it */
-
-		/*
-		 *
-		 *		rx
-		 *	    127	^
-		 *		|
-		 *     rxhigh --------->xxxxx     ++++++++++++++++++++
-		 *		|	xxxxxx     +++++++++++++++++++
-		 *    fix rx	|	xxxxxxx     ++++++++++++++++++
-		 *    3/4 b/w ------------------------------><------->
-		 *    rxlow and	|	xxxxxxxxx     +++++++++++|++++
-		 *    rxhigh	|	xxxxxxxxxx     ++++++++++|++++
-		 *		|	xxxxxxxxxxx     +++++++++|++++
-		 *		|	xxxxxxxxxxxx     ++++++++|++++
-		 *		|	xxxxxxxxxxxxx     +++++++|++++
-		 *		|	xxxxxxxxxxxxxx     ++++++|++++
-		 *		|	xxxxxxxxxxxxxxx     +++++|++++
-		 *		|	xxxxxxxxxxxxxxxx     ++++|++++
-		 *		|	xxxxxxxxxxxxxxxxx     +++|++++
-		 *	rxlow --------->xxxxxxxxxxxxxxxxxx     ++|++++
-		 *		|				 |
-		 *		---------------------------------|---------> tx
-		 *		0				 |	 127
-		 *						 search
-		 *						 txhigh
-		 *
-		 */
-
-		dev_dbg(bus, "Searching for Backup txhigh on RX = %d\n",
-			backuppoint.rx);
-		backuppoint.read_delay = CQSPI_PHY_MAX_RD;
-		ret = cadence_spi_find_tx_high(priv, spi, &backuppoint);
-		if (ret)
-			goto out;
-		dev_dbg(bus, "Backup txhigh: RX: %d TX: %d RD: %d\n",
-			backuppoint.rx, backuppoint.tx,
-			backuppoint.read_delay);
-
-		if (backuppoint.tx > txhigh.tx) {
-			txhigh = backuppoint;
-			dev_dbg(bus,
-				"Updating txhigh with the one at RX = %d\n",
-				backuppoint.rx);
-		}
-		dev_dbg(bus, "Final txhigh: RX: %d TX: %d RD: %d\n", txhigh.rx,
-			txhigh.tx, txhigh.read_delay);
-	}
-
-	/*
-	 * Set bottom left and top right corners. These are theoretical
-	 * corners. They may not actually be "good" points. But the longest
-	 * diagonal will be between these corners.
-	 */
-
-	bottomleft.tx = txlow.tx;
-	bottomleft.rx = rxlow.rx;
-	if (txlow.read_delay <= rxlow.read_delay)
-		bottomleft.read_delay = txlow.read_delay;
-	else
-		bottomleft.read_delay = rxlow.read_delay;
-
-	backupcornerpoint = bottomleft;
-	backupcornerpoint.tx += 4;
-	backupcornerpoint.rx += 4;
-	ret = cadence_spi_phy_apply_setting(priv, &backupcornerpoint);
-	if (!ret)
-		ret = cadence_spi_phy_check_pattern(priv, spi);
-
-	if (ret) {
-		backupcornerpoint.read_delay--;
-		ret = cadence_spi_phy_apply_setting(priv, &backupcornerpoint);
-		if (!ret)
-			ret = cadence_spi_phy_check_pattern(priv, spi);
-	}
-
-	/* TODO: if (ret) */
-
-	if (!ret)
-		bottomleft.read_delay = backupcornerpoint.read_delay;
-
-	topright.tx = txhigh.tx;
-	topright.rx = rxhigh.rx;
-	if (txhigh.read_delay >= rxhigh.read_delay)
-		topright.read_delay = txhigh.read_delay;
-	else
-		topright.read_delay = rxhigh.read_delay;
-
-	backupcornerpoint = topright;
-	backupcornerpoint.tx -= 4;
-	backupcornerpoint.rx -= 4;
-	ret = cadence_spi_phy_apply_setting(priv, &backupcornerpoint);
-	if (!ret)
-		ret = cadence_spi_phy_check_pattern(priv, spi);
-
-	if (ret) {
-		backupcornerpoint.read_delay++;
-		ret = cadence_spi_phy_apply_setting(priv, &backupcornerpoint);
-		if (!ret)
-			ret = cadence_spi_phy_check_pattern(priv, spi);
-	}
-
-	/* TODO: if (ret) */
-
-	if (!ret)
-		topright.read_delay = backupcornerpoint.read_delay;
-
-	dev_dbg(bus, "topright: RX: %d TX: %d RD: %d\n", topright.rx,
-		topright.tx, topright.read_delay);
-	dev_dbg(bus, "bottomleft: RX: %d TX: %d RD: %d\n", bottomleft.rx,
-		bottomleft.tx, bottomleft.read_delay);
-
-	ret = cadence_spi_phy_find_gaplow(priv, spi, &bottomleft, &topright,
-					  &gaplow);
-	if (ret)
-		goto out;
-	dev_dbg(bus, "gaplow: RX: %d TX: %d RD: %d\n", gaplow.rx, gaplow.tx,
-		gaplow.read_delay);
-
-	if (bottomleft.read_delay == topright.read_delay) {
-		/*
-		 * If there is only one passing region, it means that the
-		 * "true" topright is too small to find, so the start of the
-		 * failing region is a good approximation. Put the tuning point
-		 * in the middle and adjust for temperature.
-		 */
-
-		dev_dbg(bus,
-			"bottomleft and topright at the same read delay.\n");
-		topright = gaplow;
-		searchpoint.read_delay = bottomleft.read_delay;
-		searchpoint.tx = bottomleft.tx +
-				 ((topright.tx - bottomleft.tx) / 2);
-		searchpoint.rx = bottomleft.rx +
-				 ((topright.rx - bottomleft.rx) / 2);
-
-		ret = cadence_spi_get_temp(&tmp);
+	diag_start = (struct phy_setting){ .tx = 0,
+					   .rx = 0,
+					   .read_delay = CQSPI_PHY_RD_INVALID };
+	diag_end = (struct phy_setting){ .tx = CQSPI_PHY_MAX_DELAY,
+					 .rx = CQSPI_PHY_MAX_DELAY,
+					 .read_delay = CQSPI_PHY_RD_INVALID };
+
+	dev_dbg(bus, "DDR PHY tuning: searching main diagonal\n");
+	ret = cadence_spi_phy_search_diagonal_ddr(priv, spi, &tuning_pt,
+						  diag_start, diag_end);
+
+	for (shift = CQSPI_PHY_DDR_DIAG_SHIFT;
+	     ret && shift <= CQSPI_PHY_DDR_MAX_DIAG_SHIFT;
+	     shift += CQSPI_PHY_DDR_DIAG_SHIFT) {
+		/* Up-shifted diagonal: rx-biased */
+		dev_dbg(bus, "DDR PHY tuning: up-shifted diagonal, shift=%d\n",
+			shift);
+		diag_start = (struct phy_setting){
+			.tx = 0, .rx = shift, .read_delay = CQSPI_PHY_RD_INVALID
+		};
+		diag_end = (struct phy_setting){
+			.tx = CQSPI_PHY_MAX_DELAY - shift,
+			.rx = CQSPI_PHY_MAX_DELAY,
+			.read_delay = CQSPI_PHY_RD_INVALID
+		};
+		ret = cadence_spi_phy_search_diagonal_ddr(priv, spi,
+							  &tuning_pt,
+							  diag_start, diag_end);
 		if (ret) {
-			/*
-			 * Assume room temperature if we couldn't get it from
-			 * the thermal sensor.
-			 */
-
+			/* Right-shifted diagonal: tx-biased */
 			dev_dbg(bus,
-				"Unable to get temperature. Assuming room temperature\n");
-			tmp = CQSPI_PHY_DEFAULT_TEMP;
-		}
-
-		if (tmp < CQSPI_PHY_MIN_TEMP || tmp > CQSPI_PHY_MAX_TEMP) {
-			printf("ERROR: temperature outside operating range: %dC\n",
-			       tmp);
-			return -EINVAL;
-		}
-
-		/* Avoid a divide-by-zero. */
-
-		if (tmp == CQSPI_PHY_MID_TEMP)
-			tmp++;
-		dev_dbg(bus, "Temperature: %dC\n", tmp);
-
-		searchpoint.tx += (topright.tx - bottomleft.tx) /
-				  (330 / (tmp - CQSPI_PHY_MID_TEMP));
-		searchpoint.rx += (topright.rx - bottomleft.rx) /
-				  (330 / (tmp - CQSPI_PHY_MID_TEMP));
-	} else {
-		/*
-		 * If there are two passing regions, find the start and end of
-		 * the second one.
-		 */
-
-		ret = cadence_spi_phy_find_gaphigh(priv, spi, &bottomleft,
-						   &topright, &gaphigh);
-		if (ret)
-			return ret;
-		dev_dbg(bus, "gaphigh: RX: %d TX: %d RD: %d\n", gaphigh.rx,
-			gaphigh.tx, gaphigh.read_delay);
-
-		/*
-		 * Place the final tuning point in the corner furthest from the
-		 * failing region but leave some margin for temperature
-		 * changes.
-		 */
-
-		if ((abs(gaplow.tx - bottomleft.tx) +
-		     abs(gaplow.rx - bottomleft.rx)) <
-		    (abs(gaphigh.tx - topright.tx) +
-		     abs(gaphigh.rx - topright.rx))) {
-			searchpoint = topright;
-			searchpoint.tx -= 16;
-			searchpoint.rx -= (16 * (topright.rx - bottomleft.rx))
-					  / (topright.tx - bottomleft.tx);
-		} else {
-			searchpoint = bottomleft;
-			searchpoint.tx += 16;
-			searchpoint.rx += (16 * (topright.rx - bottomleft.rx))
-					  / (topright.tx - bottomleft.tx);
+				"DDR PHY tuning: right-shifted diagonal, shift=%d\n",
+				shift);
+			diag_start = (struct phy_setting){
+				.tx = shift,
+				.rx = 0,
+				.read_delay = CQSPI_PHY_RD_INVALID
+			};
+			diag_end = (struct phy_setting){
+				.tx = CQSPI_PHY_MAX_DELAY,
+				.rx = CQSPI_PHY_MAX_DELAY - shift,
+				.read_delay = CQSPI_PHY_RD_INVALID
+			};
+			ret = cadence_spi_phy_search_diagonal_ddr(priv, spi,
+								  &tuning_pt,
+								  diag_start,
+								  diag_end);
 		}
 	}
 
-	/* Set the final PHY settings we found. */
+	if (ret) {
+		dev_err(bus, "DDR PHY tuning failed to find valid configuration\n");
+		goto out;
+	}
 
-	dev_dbg(bus, "Final tuning point: RX: %d TX: %d RD: %d\n",
-		searchpoint.rx, searchpoint.tx, searchpoint.read_delay);
-	ret = cadence_spi_phy_apply_setting(priv, &searchpoint);
+	dev_dbg(bus, "DDR PHY tuning point: TX=%u RX=%u RD=%u\n",
+		tuning_pt.tx, tuning_pt.rx, tuning_pt.read_delay);
+
+	ret = cadence_spi_phy_apply_setting(priv, &tuning_pt);
 	if (!ret)
 		ret = cadence_spi_phy_check_pattern(priv, spi);
-
 	if (ret) {
-		debug("Failed to find pattern at final calibration point\n");
+		dev_err(bus, "DDR PHY: pattern check failed at tuning point\n");
 		ret = -EINVAL;
 		goto out;
 	}
 
-	ret = 0;
-	priv->phy_read_delay = searchpoint.read_delay;
+	priv->phy_read_delay = tuning_pt.read_delay;
 out:
 	if (ret)
 		priv->use_phy = false;
@@ -1597,6 +1280,7 @@ static int cadence_spi_mem_do_calibration(struct spi_slave *spi,
 {
 	struct udevice *bus = spi->dev->parent;
 	struct cadence_spi_priv *priv = dev_get_priv(bus);
+	struct udevice *dma_dev;
 	int ret;
 
 	priv->phy_read_op = *op;
@@ -1611,6 +1295,17 @@ static int cadence_spi_mem_do_calibration(struct spi_slave *spi,
 	ret = cadence_spi_phy_check_pattern(priv, spi);
 	if (ret) {
 		dev_warn(bus, "Pattern not found. Skipping calibration\n");
+		return 0;
+	}
+
+	/*
+	 * PHY-mode reads during calibration go through dma_memcpy() with no
+	 * fallback. Without a mem-to-mem DMA device every probe in the
+	 * search below is guaranteed to fail, so skip calibration entirely
+	 * instead of paying for an exhaustive, doomed search.
+	 */
+	if (dma_get_device(DMA_SUPPORTS_MEM_TO_MEM, &dma_dev)) {
+		dev_warn(bus, "No DMA device found. Skipping calibration\n");
 		return 0;
 	}
 
