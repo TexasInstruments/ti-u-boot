@@ -14,3 +14,11 @@
 &scmi {
 	bootph-all;
 };
+
+&cbass_main {
+	system-controller {
+		compatible = "ti,am62l-sci";
+		ti,host-id = <12>;
+		bootph-all;
+	};
+};
