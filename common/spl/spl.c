@@ -562,6 +562,10 @@ __weak int spl_check_board_image(struct spl_image_info *spl_image,
 	return 0;
 }
 
+__weak void spl_enable_caches(void)
+{
+}
+
 static int spl_load_image(struct spl_image_info *spl_image,
 			  struct spl_image_loader *loader)
 {
@@ -676,6 +680,7 @@ void board_init_r(gd_t *dummy1, ulong dummy2)
 	debug(">>" PHASE_PROMPT "board_init_r()\n");
 
 	spl_set_bd();
+	spl_enable_caches();
 
 	if (IS_ENABLED(CONFIG_SPL_SYS_MALLOC)) {
 		mem_malloc_init(SPL_SYS_MALLOC_START, SPL_SYS_MALLOC_SIZE);

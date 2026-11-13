@@ -685,6 +685,16 @@ void __noreturn jump_to_image_optee(struct spl_image_info *spl_image);
 int spl_start_uboot(void);
 
 /**
+ * spl_enable_caches() - Enable caches at SPL stage
+ *
+ * This is function to be implemented by board/arch specific hooks, where
+ * cache flush and re-enable is needed at board_init_r level
+ *
+ */
+
+void spl_enable_caches(void);
+
+/**
  * spl_display_print() - Display a board-specific message in SPL
  *
  * If CONFIG_SPL_DISPLAY_PRINT is enabled, U-Boot will call this function

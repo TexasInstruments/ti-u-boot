@@ -534,6 +534,13 @@ void k3_fix_rproc_clock(const char *path)
 		       path, a_core_frequency / 1000000, speed_grade);
 }
 
+void spl_enable_caches(void)
+{
+#if !(defined(CONFIG_SYS_ICACHE_OFF) && defined(CONFIG_SYS_DCACHE_OFF))
+	enable_caches();
+#endif
+}
+
 void spl_enable_cache(void)
 {
 #if !(defined(CONFIG_SYS_ICACHE_OFF) && defined(CONFIG_SYS_DCACHE_OFF))
@@ -564,7 +571,6 @@ void spl_enable_cache(void)
 	      gd->arch.tlb_addr + gd->arch.tlb_size);
 	gd->relocaddr = gd->arch.tlb_addr;
 
-	enable_caches();
 #endif
 }
 
@@ -695,6 +701,7 @@ void spl_board_prepare_for_boot(void)
 		panic("%s: Failed to boot in falcon mode: %d\n", __func__, ret);
 #endif
 #if !(defined(CONFIG_SYS_ICACHE_OFF) && defined(CONFIG_SYS_DCACHE_OFF))
+	icache_disable();
 	dcache_disable();
 #endif
 #if IS_ENABLED(CONFIG_SPL_DMA) && IS_ENABLED(CONFIG_SPL_DM_DEVICE_REMOVE)
