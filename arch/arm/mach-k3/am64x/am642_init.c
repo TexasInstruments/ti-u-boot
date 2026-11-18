@@ -49,6 +49,37 @@ const struct k3_speed_grade_map *k3_get_speed_grade_map(void)
 	return am64_map;
 }
 
+static void drive_strength_fix(void)
+{
+	u32 nominal, fast;
+
+	/* fix Horizontal IO drive strength */
+	fast = readl(MCU_CTRL_MMR_CFG0_DRV_FAST0) &
+		     MCU_CTRL_MMR_DRVSTRNGTH_MASK;
+	nominal = readl(MCU_CTRL_MMR_CFG0_DRV_NOM0) &
+			MCU_CTRL_MMR_DRVSTRNGTH_MASK;
+
+	if (!fast) {
+		writel((nominal + 2) > MCU_CTRL_MMR_DRVSTRNGTH_MAX ?
+		       MCU_CTRL_MMR_DRVSTRNGTH_MAX :
+		       nominal + 2,
+		       MCU_CTRL_MMR_CFG0_DRV_FAST0);
+	}
+
+	/* fix Vertical IO drive strength */
+	fast = readl(MCU_CTRL_MMR_CFG0_DRV_FAST1) &
+		     MCU_CTRL_MMR_DRVSTRNGTH_MASK;
+	nominal = readl(MCU_CTRL_MMR_CFG0_DRV_NOM1) &
+			MCU_CTRL_MMR_DRVSTRNGTH_MASK;
+
+	if (!fast) {
+		writel((nominal + 2) > MCU_CTRL_MMR_DRVSTRNGTH_MAX ?
+		       MCU_CTRL_MMR_DRVSTRNGTH_MAX :
+		       nominal + 2,
+		       MCU_CTRL_MMR_CFG0_DRV_FAST1);
+	}
+}
+
 static void ctrl_mmr_unlock(void)
 {
 	/* Unlock all PADCFG_MMR1 module registers */
@@ -287,6 +318,7 @@ void board_init_f(ulong dummy)
 #endif
 
 	k3_fix_rproc_clock("/a53@0");
+	drive_strength_fix();
 }
 
 u32 spl_mmc_boot_mode(struct mmc *mmc, const u32 boot_device)

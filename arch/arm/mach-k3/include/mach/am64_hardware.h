@@ -70,6 +70,17 @@
 #define RST_SRC_MAIN_RESET_PIN			BIT(2)
 #define RST_SRC_MCU_RESET_PIN			BIT(0)
 
+#define MCU_CTRL_MMR_DRVSTRNGTH_MASK		0xF
+#define MCU_CTRL_MMR_DRVSTRNGTH_MAX		0xF
+
+/* Horizontal IO Drive Strength registers */
+#define MCU_CTRL_MMR_CFG0_DRV_NOM0			(MCU_CTRL_MMR0_BASE + 0x40C0)
+#define MCU_CTRL_MMR_CFG0_DRV_FAST0			(MCU_CTRL_MMR0_BASE + 0x40C8)
+
+/* Vertical IO Drive Strength registers */
+#define MCU_CTRL_MMR_CFG0_DRV_NOM1			(MCU_CTRL_MMR0_BASE + 0x40D0)
+#define MCU_CTRL_MMR_CFG0_DRV_FAST1			(MCU_CTRL_MMR0_BASE + 0x40D8)
+
 #if defined(CONFIG_SYS_K3_SPL_ATF) && !defined(__ASSEMBLY__)
 
 #define AM64X_DEV_RTI8			127
