@@ -49,7 +49,3 @@
 		};
 	};
 };
-
-&main_rti1 {
-	status = "disabled";
-};

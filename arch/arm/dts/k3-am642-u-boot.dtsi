@@ -31,3 +31,7 @@
 &main_pktdma {
 	bootph-all;
 };
+
+&main_rti1 {
+	status = "disabled";
+};
