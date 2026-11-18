@@ -4,11 +4,9 @@
  */
 
 #include "k3-am62p5-verdin-wifi-dev-binman.dtsi"
+#include "k3-am62p-u-boot.dtsi"
 
 / {
-	chosen {
-		tick-timer = &main_timer0;
-	};
 
 	memory@80000000 {
 		bootph-pre-ram;

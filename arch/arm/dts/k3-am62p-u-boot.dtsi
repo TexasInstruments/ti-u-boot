@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Common AM62P U-Boot dts file
+ * Copyright (C) 2022-2025 Texas Instruments Incorporated - https://www.ti.com/
+ */
+
+/ {
+	chosen {
+		tick-timer = &main_timer0;
+	};
+};
