@@ -11,3 +11,19 @@
 		stdout-path = "serial2:115200n8";
 	};
 };
+
+&main_rti1 {
+	status = "disabled";
+};
+
+&main_rti2 {
+	status = "disabled";
+};
+
+&main_rti3 {
+	status = "disabled";
+};
+
+&main_rti4 {
+	status = "disabled";
+};
