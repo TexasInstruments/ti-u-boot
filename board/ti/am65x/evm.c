@@ -167,31 +167,31 @@ static int probe_daughtercards(void)
 		{
 			AM65X_EVM_APP_BRD_DET,
 			"AM6-GPAPPEVM",
-			"k3-am654-gp.dtbo",
+			"ti/k3-am654-gp.dtbo",
 			0,
 		},
 		{
 			AM65X_EVM_APP_BRD_DET,
 			"AM6-IDKAPPEVM",
-			"k3-am654-idk.dtbo",
+			"ti/k3-am654-idk.dtbo",
 			3,
 		},
 		{
 			AM65X_EVM_SERDES_BRD_DET,
 			"SER-PCIE2LEVM",
-			"k3-am654-pcie-usb2.dtbo",
+			"ti/k3-am654-pcie-usb2.dtbo",
 			0,
 		},
 		{
 			AM65X_EVM_SERDES_BRD_DET,
 			"SER-PCIEUSBEVM",
-			"k3-am654-pcie-usb3.dtbo",
+			"ti/k3-am654-pcie-usb3.dtbo",
 			0,
 		},
 		{
 			AM65X_EVM_LCD_BRD_DET,
 			"OLDI-LCD1EVM",
-			"k3-am654-evm-oldi-lcd1evm.dtbo",
+			"ti/k3-am654-base-board-rocktech-rk101-panel.dtbo",
 			0,
 		},
 	};
@@ -327,8 +327,8 @@ static const struct {
 	const char *fit_node;
 	const char *dtbo_name;
 } spl_fit_overlay_map[] = {
-	{ "fdt-am654-pcie-usb2", "k3-am654-pcie-usb2.dtbo" },
-	{ "fdt-am654-pcie-usb3", "k3-am654-pcie-usb3.dtbo" },
+	{ "fdt-am654-pcie-usb2", "ti/k3-am654-pcie-usb2.dtbo" },
+	{ "fdt-am654-pcie-usb3", "ti/k3-am654-pcie-usb3.dtbo" },
 };
 
 int board_spl_fit_append_fdt_skip(const char *name)
